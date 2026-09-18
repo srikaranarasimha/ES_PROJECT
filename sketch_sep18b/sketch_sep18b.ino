@@ -23,17 +23,32 @@ TM1637Display displayBlack(CLK2, DIO2);
 #define ENC_SW  5
 
 // Game state
-enum GameState { SET_WHITE_TIME, SET_BLACK_TIME, SET_INCREMENT, READY, RUNNING, PAUSED };
-GameState gameState = READY; // boot directly into READY now
+enum GameState {
+  SET_WHITE_TIME,
+  SET_WHITE_SECONDS,
+  SET_BLACK_TIME,
+  SET_BLACK_SECONDS,
+  SET_INCREMENT,
+  READY,
+  RUNNING,
+  PAUSED
+};
 
-// Setup values (editable via encoder, only when config is entered)
+GameState gameState = READY;
+
+// Setup values
 int whiteSetMinutes = 5;
+int whiteSetSeconds = 0;
+
 int blackSetMinutes = 5;
+int blackSetSeconds = 0;
+
 int incrementSeconds = 0;
 
-// Actual running clocks (in seconds)
+// Actual running clocks
 long whiteTimeLeft = 5L * 60;
 long blackTimeLeft = 5L * 60;
+
 bool whiteActive = true;
 
 unsigned long lastTickMillis = 0;
@@ -53,10 +68,12 @@ Button btnReset = {BTN_RESET, HIGH, HIGH, 0};
 Button btnEncSW = {ENC_SW, HIGH, HIGH, 0};
 
 const unsigned long DEBOUNCE_DELAY = 40;
+
 int lastClkState;
 
 void setup() {
   Serial.begin(115200);
+
   displayWhite.setBrightness(0x0f);
   displayBlack.setBrightness(0x0f);
 
@@ -75,31 +92,39 @@ void setup() {
   lastTickMillis = millis();
 
   Serial.println("Chess clock ready - 5:00 / 5:00, no increment");
+
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
 }
 
 bool wasPressed(Button &btn) {
   bool reading = digitalRead(btn.pin);
+
   if (reading != btn.lastReading) {
     btn.lastChangeTime = millis();
   }
+
   bool pressedEvent = false;
+
   if ((millis() - btn.lastChangeTime) > DEBOUNCE_DELAY) {
     if (reading != btn.stableState) {
       btn.stableState = reading;
+
       if (btn.stableState == LOW) {
         pressedEvent = true;
       }
     }
   }
+
   btn.lastReading = reading;
+
   return pressedEvent;
 }
 
 int readEncoderDelta() {
   int clkState = digitalRead(ENC_CLK);
   int delta = 0;
+
   if (clkState != lastClkState) {
     if (digitalRead(ENC_DT) != clkState) {
       delta = 1;
@@ -107,32 +132,98 @@ int readEncoderDelta() {
       delta = -1;
     }
   }
+
   lastClkState = clkState;
+
   return delta;
 }
 
 void updateSetupDisplay() {
+
   switch (gameState) {
+
     case SET_WHITE_TIME:
-      displayWhite.showNumberDecEx(whiteSetMinutes * 100, 0b11100000, true);
+
+      displayWhite.showNumberDecEx(
+        whiteSetMinutes * 100,
+        0b11100000,
+        true
+      );
+
       displayBlack.clear();
+
       Serial.print("Set White minutes: ");
       Serial.println(whiteSetMinutes);
+
       break;
+
+
+    case SET_WHITE_SECONDS:
+
+      displayWhite.showNumberDecEx(
+        whiteSetMinutes * 100 + whiteSetSeconds,
+        0b11100000,
+        true
+      );
+
+      displayBlack.clear();
+
+      Serial.print("Set White seconds: ");
+      Serial.println(whiteSetSeconds);
+
+      break;
+
 
     case SET_BLACK_TIME:
-      displayWhite.showNumberDecEx(whiteSetMinutes * 100, 0b11100000, true);
-      displayBlack.showNumberDecEx(blackSetMinutes * 100, 0b11100000, true);
+
+      displayWhite.showNumberDecEx(
+        whiteSetMinutes * 100 + whiteSetSeconds,
+        0b11100000,
+        true
+      );
+
+      displayBlack.showNumberDecEx(
+        blackSetMinutes * 100,
+        0b11100000,
+        true
+      );
+
       Serial.print("Set Black minutes: ");
       Serial.println(blackSetMinutes);
+
       break;
 
+
+    case SET_BLACK_SECONDS:
+
+      displayWhite.showNumberDecEx(
+        whiteSetMinutes * 100 + whiteSetSeconds,
+        0b11100000,
+        true
+      );
+
+      displayBlack.showNumberDecEx(
+        blackSetMinutes * 100 + blackSetSeconds,
+        0b11100000,
+        true
+      );
+
+      Serial.print("Set Black seconds: ");
+      Serial.println(blackSetSeconds);
+
+      break;
+
+
     case SET_INCREMENT:
+
       displayWhite.showNumberDec(incrementSeconds, false);
       displayBlack.showNumberDec(incrementSeconds, false);
+
       Serial.print("Set increment (sec): ");
       Serial.println(incrementSeconds);
+
       break;
+
 
     default:
       break;
@@ -140,115 +231,311 @@ void updateSetupDisplay() {
 }
 
 void loop() {
+
   unsigned long now = millis();
 
-  // --- Config flow (only entered deliberately via encoder press) ---
-  if (gameState == SET_WHITE_TIME || gameState == SET_BLACK_TIME || gameState == SET_INCREMENT) {
+  // =================================================
+  // CONFIGURATION MODE
+  // =================================================
+
+  if (gameState == SET_WHITE_TIME ||
+      gameState == SET_WHITE_SECONDS ||
+      gameState == SET_BLACK_TIME ||
+      gameState == SET_BLACK_SECONDS ||
+      gameState == SET_INCREMENT) {
+
     int delta = readEncoderDelta();
 
+    // Encoder rotation
     if (delta != 0) {
+
       if (gameState == SET_WHITE_TIME) {
-        whiteSetMinutes = constrain(whiteSetMinutes + delta, 1, 99);
+
+        whiteSetMinutes = constrain(
+          whiteSetMinutes + delta,
+          1,
+          99
+        );
+
+      } else if (gameState == SET_WHITE_SECONDS) {
+
+        whiteSetSeconds = constrain(
+          whiteSetSeconds + delta,
+          0,
+          59
+        );
+
       } else if (gameState == SET_BLACK_TIME) {
-        blackSetMinutes = constrain(blackSetMinutes + delta, 1, 99);
+
+        blackSetMinutes = constrain(
+          blackSetMinutes + delta,
+          1,
+          99
+        );
+
+      } else if (gameState == SET_BLACK_SECONDS) {
+
+        blackSetSeconds = constrain(
+          blackSetSeconds + delta,
+          0,
+          59
+        );
+
       } else if (gameState == SET_INCREMENT) {
-        incrementSeconds = constrain(incrementSeconds + delta, 0, 60);
+
+        incrementSeconds = constrain(
+          incrementSeconds + delta,
+          0,
+          60
+        );
       }
+
       updateSetupDisplay();
     }
 
+    // Encoder button = confirm current setting
     if (wasPressed(btnEncSW)) {
+
       if (gameState == SET_WHITE_TIME) {
+
+        gameState = SET_WHITE_SECONDS;
+
+      } else if (gameState == SET_WHITE_SECONDS) {
+
         gameState = SET_BLACK_TIME;
+
       } else if (gameState == SET_BLACK_TIME) {
+
+        gameState = SET_BLACK_SECONDS;
+
+      } else if (gameState == SET_BLACK_SECONDS) {
+
         gameState = SET_INCREMENT;
+
       } else if (gameState == SET_INCREMENT) {
-        whiteTimeLeft = whiteSetMinutes * 60L;
-        blackTimeLeft = blackSetMinutes * 60L;
+
+        // Convert configured time into seconds
+        whiteTimeLeft =
+          whiteSetMinutes * 60L +
+          whiteSetSeconds;
+
+        blackTimeLeft =
+          blackSetMinutes * 60L +
+          blackSetSeconds;
+
+        whiteActive = true;
+
         gameState = READY;
-        Serial.print("Config saved. Mode: ");
-        Serial.println(incrementSeconds == 0 ? "Sudden Death" : "Fischer Increment");
+
+        Serial.println("Configuration saved.");
+
+        Serial.print("White: ");
+        Serial.print(whiteSetMinutes);
+        Serial.print(":");
+        if (whiteSetSeconds < 10) Serial.print("0");
+        Serial.println(whiteSetSeconds);
+
+        Serial.print("Black: ");
+        Serial.print(blackSetMinutes);
+        Serial.print(":");
+        if (blackSetSeconds < 10) Serial.print("0");
+        Serial.println(blackSetSeconds);
+
+        Serial.print("Increment: ");
+        Serial.print(incrementSeconds);
+        Serial.println(" seconds");
+
+        Serial.print("Mode: ");
+
+        if (incrementSeconds == 0) {
+          Serial.println("Sudden Death");
+        } else {
+          Serial.println("Fischer Increment");
+        }
+
         showTime(displayWhite, whiteTimeLeft);
         showTime(displayBlack, blackTimeLeft);
+
+        return;
       }
+
       updateSetupDisplay();
     }
+
     return;
   }
 
-  // --- Encoder push button enters config, only when safe to reconfigure ---
+
+  // =================================================
+  // ENTER CONFIGURATION
+  // =================================================
+
   if (wasPressed(btnEncSW)) {
+
     if (gameState == READY || gameState == PAUSED) {
+
       gameState = SET_WHITE_TIME;
-      Serial.println("Entering time config - set White's minutes");
+
+      Serial.println("Entering time configuration");
+
       updateSetupDisplay();
+
       return;
     }
   }
 
-  // --- Normal game button handling ---
+
+  // =================================================
+  // START
+  // =================================================
+
   if (wasPressed(btnStart)) {
+
     if (gameState == READY || gameState == PAUSED) {
+
       gameState = RUNNING;
+
+      lastTickMillis = millis();
+
       Serial.println("Game RUNNING");
     }
   }
 
+
+  // =================================================
+  // PAUSE
+  // =================================================
+
   if (wasPressed(btnPause)) {
+
     if (gameState == RUNNING) {
+
       gameState = PAUSED;
+
       Serial.println("Game PAUSED");
     }
   }
 
+
+  // =================================================
+  // RESET
+  // =================================================
+
   if (wasPressed(btnReset)) {
-    // Reset always snaps both sides back to a flat 5:00 - no setup screen
-    whiteSetMinutes = 5;
-    blackSetMinutes = 5;
-    whiteTimeLeft = 5L * 60;
-    blackTimeLeft = 5L * 60;
+
+    whiteTimeLeft =
+      whiteSetMinutes * 60L +
+      whiteSetSeconds;
+
+    blackTimeLeft =
+      blackSetMinutes * 60L +
+      blackSetSeconds;
+
     whiteActive = true;
+
     gameState = READY;
-    Serial.println("Reset - both clocks back to 5:00, READY");
+
+    Serial.println("Reset - configured time restored");
+
     showTime(displayWhite, whiteTimeLeft);
     showTime(displayBlack, blackTimeLeft);
   }
 
+
+  // =================================================
+  // WHITE BUTTON
+  // =================================================
+
   if (wasPressed(btnWhite)) {
+
     if (gameState == RUNNING && whiteActive) {
+
+      // Fischer increment
       whiteTimeLeft += incrementSeconds;
+
       whiteActive = false;
-      Serial.println("White pressed - Black's clock now running");
+
+      lastTickMillis = millis();
+
+      Serial.println(
+        "White pressed - Black's clock now running"
+      );
     }
   }
+
+
+  // =================================================
+  // BLACK BUTTON
+  // =================================================
 
   if (wasPressed(btnBlack)) {
+
     if (gameState == RUNNING && !whiteActive) {
+
+      // Fischer increment
       blackTimeLeft += incrementSeconds;
+
       whiteActive = true;
-      Serial.println("Black pressed - White's clock now running");
+
+      lastTickMillis = millis();
+
+      Serial.println(
+        "Black pressed - White's clock now running"
+      );
     }
   }
 
-  // --- Clock ticking ---
-  if (gameState == RUNNING && (now - lastTickMillis >= 1000)) {
-    lastTickMillis = now;
+
+  // =================================================
+  // CLOCK TICKING
+  // =================================================
+
+  if (gameState == RUNNING &&
+      (now - lastTickMillis >= 1000)) {
+
+    lastTickMillis += 1000;
+
     if (whiteActive && whiteTimeLeft > 0) {
+
       whiteTimeLeft--;
+
     } else if (!whiteActive && blackTimeLeft > 0) {
+
       blackTimeLeft--;
     }
+
   } else if (gameState != RUNNING) {
+
     lastTickMillis = now;
   }
+
+
+  // =================================================
+  // UPDATE DISPLAYS
+  // =================================================
 
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
 }
 
-void showTime(TM1637Display &disp, long secondsLeft) {
+
+// =====================================================
+// SHOW TIME
+// =====================================================
+
+void showTime(
+  TM1637Display &disp,
+  long secondsLeft
+) {
+
   int minutes = secondsLeft / 60;
   int seconds = secondsLeft % 60;
+
   int value = minutes * 100 + seconds;
-  disp.showNumberDecEx(value, 0b11100000, true);
+
+  disp.showNumberDecEx(
+    value,
+    0b11100000,
+    true
+  );
 }
