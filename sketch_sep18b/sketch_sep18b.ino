@@ -19,14 +19,14 @@ TM1637Display displayBlack(CLK2, DIO2);
 #define BTN_START   27
 #define BTN_PAUSE   14
 #define BTN_RESET   13
-#define BTN_SPARE   4
+// BTN_SPARE (GPIO4) removed - that pin belongs to the RTC (SCL)
 
 // Rotary encoder
 #define ENC_CLK 17
 #define ENC_DT  16
 #define ENC_SW  5
 
-// LEDs (no buzzer yet - added in a later pass)
+// LEDs
 #define LED_WHITE_PIN  22
 #define LED_BLACK_PIN  21
 #define LED_ALERT_PIN  2
@@ -78,8 +78,14 @@ int lastClkState;
 unsigned long lastBlinkMillis = 0;
 bool blinkState = false;
 
+// --- Config-screen blink state ---
+unsigned long lastConfigBlinkMillis = 0;
+bool configBlinkOn = true;
+const unsigned long CONFIG_BLINK_INTERVAL = 400; // ms
+
 void setup() {
   Serial.begin(115200);
+  delay(1000);
   displayWhite.setBrightness(0x0f);
   displayBlack.setBrightness(0x0f);
 
@@ -88,7 +94,6 @@ void setup() {
   pinMode(BTN_START, INPUT_PULLUP);
   pinMode(BTN_PAUSE, INPUT_PULLUP);
   pinMode(BTN_RESET, INPUT_PULLUP);
-  pinMode(BTN_SPARE, INPUT_PULLUP);
 
   pinMode(ENC_CLK, INPUT_PULLUP);
   pinMode(ENC_DT, INPUT_PULLUP);
@@ -101,15 +106,16 @@ void setup() {
   digitalWrite(LED_BLACK_PIN, LOW);
   digitalWrite(LED_ALERT_PIN, LOW);
 
-Wire.begin(23, 4); // SDA=23, SCL=4 - avoids all strapping pins
+  // --- RTC setup (SDA=23, SCL=4 - avoids strapping pins 12/15) ---
+  Wire.begin(23, 4);
+  Wire.setTimeOut(1000);
+
   if (!rtc.begin()) {
     Serial.println("Couldn't find DS3231 - check wiring!");
   } else {
     if (rtc.lostPower()) {
       Serial.println("RTC lost power, setting time to compile time.");
-      // After first successful flash, comment the line below out and
-      // re-upload - otherwise it keeps resetting to compile-time.
-      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     }
     Serial.print("RTC ready. Current time: ");
     printTimestamp(rtc.now());
@@ -163,26 +169,51 @@ int readEncoderDelta() {
   return delta;
 }
 
+// --- Blink-aware display helpers for config screens ---
+void showMinSecBlink(TM1637Display &disp, int minutes, int seconds, bool blinkMinutesPart, bool blinkOn) {
+  uint8_t segs[4];
+  bool showMin = blinkMinutesPart ? blinkOn : true;
+  bool showSec = blinkMinutesPart ? true : blinkOn;
+
+  segs[0] = showMin ? disp.encodeDigit(minutes / 10) : 0x00;
+  segs[1] = showMin ? disp.encodeDigit(minutes % 10) : 0x00;
+  segs[2] = showSec ? disp.encodeDigit(seconds / 10) : 0x00;
+  segs[3] = showSec ? disp.encodeDigit(seconds % 10) : 0x00;
+
+  segs[1] |= 0x80; // colon always on
+
+  disp.setSegments(segs, 4, 0);
+}
+
+void showIncrementBlink(TM1637Display &disp, int value, bool blinkOn) {
+  if (blinkOn) {
+    disp.showNumberDec(value, false);
+  } else {
+    uint8_t blank[4] = {0, 0, 0, 0};
+    disp.setSegments(blank, 4, 0);
+  }
+}
+
 void updateSetupDisplay() {
   switch (gameState) {
     case SET_WHITE_MIN:
-      displayWhite.showNumberDecEx(whiteSetMinutes * 100, 0b11100000, true);
+      showMinSecBlink(displayWhite, whiteSetMinutes, whiteSetSeconds, true, configBlinkOn);
       displayBlack.clear();
       break;
     case SET_WHITE_SEC:
-      displayWhite.showNumberDecEx(whiteSetMinutes * 100 + whiteSetSeconds, 0b11100000, true);
+      showMinSecBlink(displayWhite, whiteSetMinutes, whiteSetSeconds, false, configBlinkOn);
       break;
     case SET_BLACK_MIN:
-      displayBlack.showNumberDecEx(blackSetMinutes * 100, 0b11100000, true);
+      showMinSecBlink(displayBlack, blackSetMinutes, blackSetSeconds, true, configBlinkOn);
       break;
     case SET_BLACK_SEC:
-      displayBlack.showNumberDecEx(blackSetMinutes * 100 + blackSetSeconds, 0b11100000, true);
+      showMinSecBlink(displayBlack, blackSetMinutes, blackSetSeconds, false, configBlinkOn);
       break;
     case SET_WHITE_INC:
-      displayWhite.showNumberDec(whiteIncrement, false);
+      showIncrementBlink(displayWhite, whiteIncrement, configBlinkOn);
       break;
     case SET_BLACK_INC:
-      displayBlack.showNumberDec(blackIncrement, false);
+      showIncrementBlink(displayBlack, blackIncrement, configBlinkOn);
       break;
     default:
       break;
@@ -198,6 +229,12 @@ void loop() {
                     gameState == SET_WHITE_INC || gameState == SET_BLACK_INC);
 
   if (inConfig) {
+    if (now - lastConfigBlinkMillis >= CONFIG_BLINK_INTERVAL) {
+      lastConfigBlinkMillis = now;
+      configBlinkOn = !configBlinkOn;
+      updateSetupDisplay();
+    }
+
     int delta = readEncoderDelta();
     if (delta != 0) {
       switch (gameState) {
@@ -228,6 +265,8 @@ void loop() {
           break;
         default: break;
       }
+      configBlinkOn = true;
+      lastConfigBlinkMillis = now;
       updateSetupDisplay();
     }
     return;
@@ -245,6 +284,8 @@ void loop() {
   if (wasPressed(btnEncSW)) {
     if (gameState == READY || gameState == PAUSED) {
       gameState = SET_WHITE_MIN;
+      configBlinkOn = true;
+      lastConfigBlinkMillis = now;
       updateSetupDisplay();
       return;
     }
@@ -254,6 +295,8 @@ void loop() {
   if (wasPressed(btnStart)) {
     if (gameState == READY || gameState == PAUSED) {
       gameState = RUNNING;
+      showTime(displayWhite, whiteTimeLeft);
+      showTime(displayBlack, blackTimeLeft);
 
       if (!gameStartLogged) {
         Serial.print("GAME STARTED at: ");
@@ -283,6 +326,7 @@ void loop() {
     if (gameState == RUNNING && whiteActive) {
       whiteTimeLeft += whiteIncrement;
       whiteActive = false;
+      showTime(displayWhite, whiteTimeLeft);
 
       Serial.print("WHITE moved at: ");
       printTimestamp(rtc.now());
@@ -295,6 +339,7 @@ void loop() {
     if (gameState == RUNNING && !whiteActive) {
       blackTimeLeft += blackIncrement;
       whiteActive = true;
+      showTime(displayBlack, blackTimeLeft);
 
       Serial.print("BLACK moved at: ");
       printTimestamp(rtc.now());
@@ -303,7 +348,7 @@ void loop() {
     }
   }
 
-  // --- Clock ticking ---
+  // --- Clock ticking (only place that runs once per second) ---
   if (gameState == RUNNING && (now - lastTickMillis >= 1000)) {
     lastTickMillis = now;
     if (whiteActive && whiteTimeLeft > 0) {
@@ -311,6 +356,9 @@ void loop() {
     } else if (!whiteActive && blackTimeLeft > 0) {
       blackTimeLeft--;
     }
+
+    showTime(displayWhite, whiteTimeLeft);
+    showTime(displayBlack, blackTimeLeft);
 
     if (whiteTimeLeft <= 0 || blackTimeLeft <= 0) {
       whiteTimeLeft = max(whiteTimeLeft, 0L);
@@ -346,9 +394,6 @@ void loop() {
       digitalWrite(LED_ALERT_PIN, LOW);
     }
   }
-
-  showTime(displayWhite, whiteTimeLeft);
-  showTime(displayBlack, blackTimeLeft);
 }
 
 void resetToDefault() {
