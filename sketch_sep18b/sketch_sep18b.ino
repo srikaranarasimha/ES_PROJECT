@@ -124,9 +124,35 @@ void setup() {
   lastClkState = digitalRead(ENC_CLK);
   lastTickMillis = millis();
 
-  Serial.println("Chess clock ready - 5:00 / 5:00, no increment");
+printGameStatus();
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
+}
+
+void printGameStatus() {
+  Serial.println("---- Game Ready ----");
+  Serial.print("White: ");
+  Serial.print(whiteSetMinutes);
+  Serial.print("m ");
+  Serial.print(whiteSetSeconds);
+  Serial.print("s, increment +");
+  Serial.print(whiteIncrement);
+  Serial.println("s");
+
+  Serial.print("Black: ");
+  Serial.print(blackSetMinutes);
+  Serial.print("m ");
+  Serial.print(blackSetSeconds);
+  Serial.print("s, increment +");
+  Serial.print(blackIncrement);
+  Serial.println("s");
+
+  Serial.println(
+    (whiteIncrement == 0 && blackIncrement == 0)
+      ? "Mode: Sudden Death"
+      : "Mode: Fischer Increment"
+  );
+  Serial.println("---------------------");
 }
 
 void printTimestamp(DateTime dt) {
@@ -262,6 +288,7 @@ void loop() {
           gameState = READY;
           showTime(displayWhite, whiteTimeLeft);
           showTime(displayBlack, blackTimeLeft);
+           printGameStatus();
           break;
         default: break;
       }
@@ -414,6 +441,7 @@ void resetToDefault() {
 
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
+   printGameStatus();
 }
 
 void showTime(TM1637Display &disp, long secondsLeft) {
