@@ -3,6 +3,7 @@
 #include <RTClib.h>
 
 RTC_DS3231 rtc;
+bool rtcAvailable = false; // tracks whether RTC calls are safe to make
 
 // Displays
 #define CLK1 18
@@ -19,7 +20,6 @@ TM1637Display displayBlack(CLK2, DIO2);
 #define BTN_START   27
 #define BTN_PAUSE   14
 #define BTN_RESET   13
-// BTN_SPARE (GPIO4) removed - that pin belongs to the RTC (SCL)
 
 // Rotary encoder
 #define ENC_CLK 17
@@ -30,6 +30,10 @@ TM1637Display displayBlack(CLK2, DIO2);
 #define LED_WHITE_PIN  22
 #define LED_BLACK_PIN  21
 #define LED_ALERT_PIN  2
+
+// I2C pins for RTC (avoids strapping pins 12/15)
+#define RTC_SDA 23
+#define RTC_SCL 4
 
 // Game state
 enum GameState {
@@ -106,27 +110,74 @@ void setup() {
   digitalWrite(LED_BLACK_PIN, LOW);
   digitalWrite(LED_ALERT_PIN, LOW);
 
-  // --- RTC setup (SDA=23, SCL=4 - avoids strapping pins 12/15) ---
-  Wire.begin(23, 4);
-  Wire.setTimeOut(1000);
-
-  if (!rtc.begin()) {
-    Serial.println("Couldn't find DS3231 - check wiring!");
-  } else {
-    if (rtc.lostPower()) {
-      Serial.println("RTC lost power, setting time to compile time.");
-     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-    }
-    Serial.print("RTC ready. Current time: ");
-    printTimestamp(rtc.now());
-  }
+  initRTC();
 
   lastClkState = digitalRead(ENC_CLK);
   lastTickMillis = millis();
 
-printGameStatus();
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
+  printGameStatus();
+}
+
+// --- RTC init + recovery helpers ---
+void initRTC() {
+  Wire.begin(RTC_SDA, RTC_SCL);
+  Wire.setTimeOut(1000); // ms - avoid permanent freeze on a stuck bus
+
+  rtcAvailable = rtc.begin();
+
+  if (!rtcAvailable) {
+    Serial.println("Couldn't find DS3231 - check wiring!");
+    return;
+  }
+
+  if (rtc.lostPower()) {
+    // No coin-cell battery installed yet, so this runs on every boot -
+    // it re-syncs to your computer's compile-time clock each upload.
+    // Once a CR2032 battery is fitted, this block stops firing and
+    // the RTC keeps real time across power cycles on its own.
+    Serial.println("RTC lost power - setting time to compile time.");
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+
+  Serial.print("RTC ready. Current time: ");
+  printTimestamp(rtc.now());
+}
+
+// Toggles SCL manually to unstick a bus a slave is holding low,
+// then re-inits Wire and the RTC. Called only if an RTC call fails.
+void recoverI2CBus() {
+  Wire.end();
+  pinMode(RTC_SCL, OUTPUT);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(RTC_SCL, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(RTC_SCL, LOW);
+    delayMicroseconds(5);
+  }
+  pinMode(RTC_SCL, INPUT);
+  initRTC();
+}
+
+// Safe wrapper - returns a valid DateTime if the RTC is up,
+// otherwise attempts one bus recovery before giving up for this call.
+DateTime safeRtcNow() {
+  if (!rtcAvailable) {
+    recoverI2CBus();
+  }
+  if (rtcAvailable) {
+    return rtc.now();
+  }
+  return DateTime((uint32_t)0); // fallback - RTC unavailable
+}
+
+void printTimestamp(DateTime dt) {
+  char buf[25];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+           dt.year(), dt.month(), dt.day(),
+           dt.hour(), dt.minute(), dt.second());
+  Serial.println(buf);
 }
 
 void printGameStatus() {
@@ -153,14 +204,6 @@ void printGameStatus() {
       : "Mode: Fischer Increment"
   );
   Serial.println("---------------------");
-}
-
-void printTimestamp(DateTime dt) {
-  char buf[25];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-           dt.year(), dt.month(), dt.day(),
-           dt.hour(), dt.minute(), dt.second());
-  Serial.println(buf);
 }
 
 bool wasPressed(Button &btn) {
@@ -288,7 +331,7 @@ void loop() {
           gameState = READY;
           showTime(displayWhite, whiteTimeLeft);
           showTime(displayBlack, blackTimeLeft);
-           printGameStatus();
+          printGameStatus();
           break;
         default: break;
       }
@@ -327,7 +370,7 @@ void loop() {
 
       if (!gameStartLogged) {
         Serial.print("GAME STARTED at: ");
-        printTimestamp(rtc.now());
+        printTimestamp(safeRtcNow());
         gameStartLogged = true;
       }
     }
@@ -344,7 +387,7 @@ void loop() {
   if (wasPressed(btnReset)) {
     if (gameStartLogged) {
       Serial.print("GAME ENDED at: ");
-      printTimestamp(rtc.now());
+      printTimestamp(safeRtcNow());
     }
     resetToDefault();
   }
@@ -356,7 +399,7 @@ void loop() {
       showTime(displayWhite, whiteTimeLeft);
 
       Serial.print("WHITE moved at: ");
-      printTimestamp(rtc.now());
+      printTimestamp(safeRtcNow());
       Serial.print("  White time left: ");
       Serial.println(whiteTimeLeft);
     }
@@ -369,7 +412,7 @@ void loop() {
       showTime(displayBlack, blackTimeLeft);
 
       Serial.print("BLACK moved at: ");
-      printTimestamp(rtc.now());
+      printTimestamp(safeRtcNow());
       Serial.print("  Black time left: ");
       Serial.println(blackTimeLeft);
     }
@@ -396,7 +439,7 @@ void loop() {
       digitalWrite(LED_ALERT_PIN, HIGH);
 
       Serial.print("GAME OVER (time out) at: ");
-      printTimestamp(rtc.now());
+      printTimestamp(safeRtcNow());
     }
   } else if (gameState != RUNNING) {
     lastTickMillis = now;
@@ -428,6 +471,8 @@ void resetToDefault() {
 
   whiteSetMinutes = 5; whiteSetSeconds = 0;
   blackSetMinutes = 5; blackSetSeconds = 0;
+  whiteIncrement=0 ; blackIncrement=0;
+
   whiteTimeLeft = 5L * 60;
   blackTimeLeft = 5L * 60;
   whiteActive = true;
@@ -441,7 +486,7 @@ void resetToDefault() {
 
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
-   printGameStatus();
+  printGameStatus();
 }
 
 void showTime(TM1637Display &disp, long secondsLeft) {
