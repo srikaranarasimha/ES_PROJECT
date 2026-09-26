@@ -1,10 +1,18 @@
 #include <TM1637Display.h>
 #include <Wire.h>
 #include <RTClib.h>
-
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WebSocketsServer.h>
 RTC_DS3231 rtc;
 bool rtcAvailable = false; // tracks whether RTC calls are safe to make
 
+
+const char* WIFI_SSID = "IIITS_Student";
+const char* WIFI_PASSWORD = "iiit5@2k18";
+
+WebServer server(80);
+WebSocketsServer webSocket = WebSocketsServer(81);
 // Displays
 #define CLK1 18
 #define DIO1 19
@@ -56,6 +64,8 @@ int blackIncrement = 0;
 long whiteTimeLeft = 5L * 60;
 long blackTimeLeft = 5L * 60;
 bool whiteActive = true;
+int whiteMoveCount = 0;
+int blackMoveCount = 0;
 
 unsigned long lastTickMillis = 0;
 const long LOW_TIME_THRESHOLD = 30; // seconds
@@ -86,10 +96,276 @@ bool blinkState = false;
 unsigned long lastConfigBlinkMillis = 0;
 bool configBlinkOn = true;
 const unsigned long CONFIG_BLINK_INTERVAL = 400; // ms
+void handleRoot() {
+  server.send(200, "text/html",
+    "<!DOCTYPE html>"
+    "<html>"
+    "<head>"
+    "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+    "<title>ESP32 Chess Clock</title>"
 
+    "<style>"
+    "body{"
+      "font-family:Arial,sans-serif;"
+      "text-align:center;"
+      "background:#111;"
+      "color:white;"
+      "margin:0;"
+      "padding:30px;"
+    "}"
+
+    "h1{font-size:32px;}"
+
+    ".clock{"
+      "font-size:70px;"
+      "font-weight:bold;"
+      "margin:20px;"
+    "}"
+
+    ".player{"
+      "padding:20px;"
+      "margin:15px auto;"
+      "max-width:500px;"
+      "border:2px solid #555;"
+      "border-radius:15px;"
+    "}"
+
+    ".active{"
+      "border-color:white;"
+    "}"
+
+    "#status{"
+      "font-size:24px;"
+      "margin:25px;"
+    "}"
+
+  "#connection{"
+  "font-size:16px;"
+  "color:#aaa;"
+"}"
+
+".info{"
+  "max-width:500px;"
+  "margin:25px auto;"
+  "padding:20px;"
+  "border:2px solid #555;"
+  "border-radius:15px;"
+  "text-align:left;"
+"}"
+
+".info h2{"
+  "text-align:center;"
+  "margin-top:0;"
+"}"
+
+".info p{"
+  "font-size:18px;"
+  "margin:12px 0;"
+"}"
+
+".info span{"
+  "font-weight:bold;"
+  "float:right;"
+"}"
+
+"</style>"
+
+    "</head>"
+
+    "<body>"
+
+    "<h1>ESP32 Chess Clock</h1>"
+
+    "<div id='connection'>Connecting...</div>"
+
+    "<div class='player' id='whiteBox'>"
+      "<h2>WHITE</h2>"
+      "<div class='clock' id='whiteTime'>05:00</div>"
+    "</div>"
+
+    "<div class='player' id='blackBox'>"
+      "<h2>BLACK</h2>"
+      "<div class='clock' id='blackTime'>05:00</div>"
+    "</div>"
+
+    "<div id='status'>Status: READY</div>"
+
+"<div class='info'>"
+
+  "<h2>Game Information</h2>"
+
+  "<p>White Time: <span id='whiteSet'>05:00</span></p>"
+
+  "<p>Black Time: <span id='blackSet'>05:00</span></p>"
+
+  "<p>White Increment: <span id='whiteInc'>0s</span></p>"
+
+  "<p>Black Increment: <span id='blackInc'>0s</span></p>"
+
+  "<p>White Moves: <span id='whiteMoves'>0</span></p>"
+ 
+  "<p>Black Moves: <span id='blackMoves'>0</span></p>"
+
+  "<p>Mode: <span id='mode'>Sudden Death</span></p>"
+
+"</div>"
+
+
+    "<script>"
+
+    "let ws = new WebSocket('ws://' + window.location.hostname + ':81/');"
+
+    "ws.onopen = function(){"
+      "document.getElementById('connection').innerHTML='WebSocket Connected';"
+    "};"
+
+    "ws.onclose = function(){"
+      "document.getElementById('connection').innerHTML='WebSocket Disconnected';"
+    "};"
+
+    "ws.onerror = function(){"
+      "document.getElementById('connection').innerHTML='WebSocket Error';"
+    "};"
+
+    "ws.onmessage = function(event){"
+
+      "let data = JSON.parse(event.data);"
+"let whiteSetMinutes = data.whiteSetMinutes;"
+"let whiteSetSeconds = data.whiteSetSeconds;"
+
+"let blackSetMinutes = data.blackSetMinutes;"
+"let blackSetSeconds = data.blackSetSeconds;"
+
+"let whiteSetTime ="
+  "String(whiteSetMinutes).padStart(2,'0') + ':' +"
+  "String(whiteSetSeconds).padStart(2,'0');"
+
+"let blackSetTime ="
+  "String(blackSetMinutes).padStart(2,'0') + ':' +"
+  "String(blackSetSeconds).padStart(2,'0');"
+
+"document.getElementById('whiteSet').innerHTML = whiteSetTime;"
+"document.getElementById('blackSet').innerHTML = blackSetTime;"
+
+"document.getElementById('whiteInc').innerHTML ="
+  "data.whiteIncrement + 's';"
+
+"document.getElementById('blackInc').innerHTML ="
+  "data.blackIncrement + 's';"
+
+"document.getElementById('whiteMoves').innerHTML ="
+"data.whiteMoves;"
+
+"document.getElementById('blackMoves').innerHTML ="
+"data.blackMoves;"
+
+"let modeText = 'Sudden Death';"
+
+"if(data.whiteIncrement > 0 || data.blackIncrement > 0){"
+  "modeText = 'Fischer Increment';"
+"}"
+
+"document.getElementById('mode').innerHTML = modeText;"
+      "let whiteMinutes = Math.floor(data.white / 60);"
+      "let whiteSeconds = data.white % 60;"
+
+      "let blackMinutes = Math.floor(data.black / 60);"
+      "let blackSeconds = data.black % 60;"
+
+      "document.getElementById('whiteTime').innerHTML ="
+        "String(whiteMinutes).padStart(2,'0') + ':' +"
+        "String(whiteSeconds).padStart(2,'0');"
+
+      "document.getElementById('blackTime').innerHTML ="
+        "String(blackMinutes).padStart(2,'0') + ':' +"
+        "String(blackSeconds).padStart(2,'0');"
+
+      "let statusText = 'READY';"
+
+      "if(data.state == 8) statusText = 'RUNNING';"
+      "else if(data.state == 9) statusText = 'PAUSED';"
+      "else if(data.state == 10) statusText = 'GAME OVER';"
+
+      "document.getElementById('status').innerHTML ="
+        "'Status: ' + statusText;"
+
+      "document.getElementById('whiteBox').classList.remove('active');"
+      "document.getElementById('blackBox').classList.remove('active');"
+
+      "if(data.whiteActive && data.state == 8){"
+        "document.getElementById('whiteBox').classList.add('active');"
+      "}"
+
+      "if(!data.whiteActive && data.state == 8){"
+        "document.getElementById('blackBox').classList.add('active');"
+      "}"
+
+    "};"
+
+    "</script>"
+
+    "</body>"
+    "</html>"
+  );
+}
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+ if (type == WStype_CONNECTED) {
+  Serial.println("WebSocket client connected");
+  sendGameStatus();
+}
+
+  if (type == WStype_DISCONNECTED) {
+    Serial.println("WebSocket client disconnected");
+  }
+}
+void sendGameStatus() {
+  String message = "{";
+
+  message += "\"white\":" + String(whiteTimeLeft) + ",";
+  message += "\"black\":" + String(blackTimeLeft) + ",";
+  message += "\"whiteActive\":" + String(whiteActive ? "true" : "false") + ",";
+  message += "\"state\":" + String((int)gameState) + ",";
+
+  message += "\"whiteSetMinutes\":" + String(whiteSetMinutes) + ",";
+  message += "\"whiteSetSeconds\":" + String(whiteSetSeconds) + ",";
+  message += "\"blackSetMinutes\":" + String(blackSetMinutes) + ",";
+  message += "\"blackSetSeconds\":" + String(blackSetSeconds) + ",";
+  message += "\"whiteIncrement\":" + String(whiteIncrement) + ",";
+message += "\"blackIncrement\":" + String(blackIncrement) + ",";
+
+message += "\"whiteMoves\":" + String(whiteMoveCount) + ",";
+message += "\"blackMoves\":" + String(blackMoveCount);
+
+  message += "}";
+
+  webSocket.broadcastTXT(message);
+}
 void setup() {
   Serial.begin(115200);
   delay(1000);
+    WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.print("Connecting to Wi-Fi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("Wi-Fi connected!");
+  Serial.print("ESP32 IP address: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", handleRoot);
+  server.begin();
+
+  Serial.println("Web server started");
+  webSocket.begin();
+webSocket.onEvent(webSocketEvent);
+
+Serial.println("WebSocket server started");
   displayWhite.setBrightness(0x0f);
   displayBlack.setBrightness(0x0f);
 
@@ -290,6 +566,8 @@ void updateSetupDisplay() {
 }
 
 void loop() {
+  server.handleClient();
+  webSocket.loop();
   unsigned long now = millis();
 
   // --- Config flow ---
@@ -373,6 +651,7 @@ void loop() {
         printTimestamp(safeRtcNow());
         gameStartLogged = true;
       }
+      sendGameStatus();
     }
   }
 
@@ -381,6 +660,8 @@ void loop() {
       gameState = PAUSED;
       digitalWrite(LED_WHITE_PIN, LOW);
       digitalWrite(LED_BLACK_PIN, LOW);
+
+      sendGameStatus();
     }
   }
 
@@ -395,26 +676,38 @@ void loop() {
   if (wasPressed(btnWhite)) {
     if (gameState == RUNNING && whiteActive) {
       whiteTimeLeft += whiteIncrement;
+      whiteMoveCount++;
       whiteActive = false;
       showTime(displayWhite, whiteTimeLeft);
+
+      sendGameStatus();
 
       Serial.print("WHITE moved at: ");
       printTimestamp(safeRtcNow());
       Serial.print("  White time left: ");
       Serial.println(whiteTimeLeft);
+
+       Serial.print("White moves: ");
+    Serial.println(whiteMoveCount);
     }
   }
 
   if (wasPressed(btnBlack)) {
     if (gameState == RUNNING && !whiteActive) {
       blackTimeLeft += blackIncrement;
+      blackMoveCount++;
       whiteActive = true;
       showTime(displayBlack, blackTimeLeft);
+
+      sendGameStatus();
 
       Serial.print("BLACK moved at: ");
       printTimestamp(safeRtcNow());
       Serial.print("  Black time left: ");
       Serial.println(blackTimeLeft);
+
+       Serial.print("Black moves: ");
+    Serial.println(blackMoveCount);
     }
   }
 
@@ -430,6 +723,8 @@ void loop() {
     showTime(displayWhite, whiteTimeLeft);
     showTime(displayBlack, blackTimeLeft);
 
+    sendGameStatus();
+
     if (whiteTimeLeft <= 0 || blackTimeLeft <= 0) {
       whiteTimeLeft = max(whiteTimeLeft, 0L);
       blackTimeLeft = max(blackTimeLeft, 0L);
@@ -440,6 +735,7 @@ void loop() {
 
       Serial.print("GAME OVER (time out) at: ");
       printTimestamp(safeRtcNow());
+      sendGameStatus();
     }
   } else if (gameState != RUNNING) {
     lastTickMillis = now;
@@ -476,6 +772,9 @@ void resetToDefault() {
   whiteTimeLeft = 5L * 60;
   blackTimeLeft = 5L * 60;
   whiteActive = true;
+
+   whiteMoveCount = 0;
+   blackMoveCount = 0;
   gameState = READY;
 
   digitalWrite(LED_WHITE_PIN, LOW);
@@ -487,6 +786,7 @@ void resetToDefault() {
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
   printGameStatus();
+  
 }
 
 void showTime(TM1637Display &disp, long secondsLeft) {
