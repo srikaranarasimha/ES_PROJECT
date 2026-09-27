@@ -66,6 +66,28 @@ long blackTimeLeft = 5L * 60;
 bool whiteActive = true;
 int whiteMoveCount = 0;
 int blackMoveCount = 0;
+#define MAX_MOVES 100
+
+unsigned long whiteThinkingTime[MAX_MOVES];
+unsigned long blackThinkingTime[MAX_MOVES];
+
+unsigned long whiteTurnStart = 0;
+unsigned long blackTurnStart = 0;
+
+unsigned long whitePausedThinking = 0;
+unsigned long blackPausedThinking = 0;
+
+int whiteThinkingCount = 0;
+int blackThinkingCount = 0;
+
+unsigned long whiteTotalThinkingTime = 0;
+unsigned long blackTotalThinkingTime = 0;
+
+unsigned long whiteLongestMove = 0;
+unsigned long blackLongestMove = 0;
+
+unsigned long whiteShortestMove = 0;
+unsigned long blackShortestMove = 0;
 
 unsigned long lastTickMillis = 0;
 const long LOW_TIME_THRESHOLD = 30; // seconds
@@ -211,6 +233,30 @@ void handleRoot() {
 "</div>"
 
 
+"<div class='info'>"
+
+  "<h2>Game Analytics</h2>"
+
+  "<p>White Total Thinking: <span id='whiteTotalThinking'>0s</span></p>"
+
+  "<p>Black Total Thinking: <span id='blackTotalThinking'>0s</span></p>"
+
+  "<p>White Average Move: <span id='whiteAverageMove'>0s</span></p>"
+
+  "<p>Black Average Move: <span id='blackAverageMove'>0s</span></p>"
+
+  "<p>White Longest Move: <span id='whiteLongestMove'>0s</span></p>"
+
+  "<p>Black Longest Move: <span id='blackLongestMove'>0s</span></p>"
+
+  "<p>White Shortest Move: <span id='whiteShortestMove'>0s</span></p>"
+
+  "<p>Black Shortest Move: <span id='blackShortestMove'>0s</span></p>"
+
+"</div>"
+
+
+
     "<script>"
 
     "let ws = new WebSocket('ws://' + window.location.hostname + ':81/');"
@@ -259,6 +305,30 @@ void handleRoot() {
 "document.getElementById('blackMoves').innerHTML ="
 "data.blackMoves;"
 
+"document.getElementById('whiteTotalThinking').innerHTML ="
+  "data.whiteTotalThinking + 's';"
+
+"document.getElementById('blackTotalThinking').innerHTML ="
+  "data.blackTotalThinking + 's';"
+
+"document.getElementById('whiteAverageMove').innerHTML ="
+  "data.whiteAverageMove + 's';"
+
+"document.getElementById('blackAverageMove').innerHTML ="
+  "data.blackAverageMove + 's';"
+
+"document.getElementById('whiteLongestMove').innerHTML ="
+  "data.whiteLongestMove + 's';"
+
+"document.getElementById('blackLongestMove').innerHTML ="
+  "data.blackLongestMove + 's';"
+
+"document.getElementById('whiteShortestMove').innerHTML ="
+  "data.whiteShortestMove + 's';"
+
+"document.getElementById('blackShortestMove').innerHTML ="
+  "data.blackShortestMove + 's';"
+
 "let modeText = 'Sudden Death';"
 
 "if(data.whiteIncrement > 0 || data.blackIncrement > 0){"
@@ -282,9 +352,9 @@ void handleRoot() {
 
       "let statusText = 'READY';"
 
-      "if(data.state == 8) statusText = 'RUNNING';"
-      "else if(data.state == 9) statusText = 'PAUSED';"
-      "else if(data.state == 10) statusText = 'GAME OVER';"
+      "if(data.state == 7) statusText = 'RUNNING';"
+      "else if(data.state == 8) statusText = 'PAUSED';"
+      "else if(data.state == 9) statusText = 'GAME OVER';"
 
       "document.getElementById('status').innerHTML ="
         "'Status: ' + statusText;"
@@ -292,11 +362,11 @@ void handleRoot() {
       "document.getElementById('whiteBox').classList.remove('active');"
       "document.getElementById('blackBox').classList.remove('active');"
 
-      "if(data.whiteActive && data.state == 8){"
+      "if(data.whiteActive && data.state == 7){"
         "document.getElementById('whiteBox').classList.add('active');"
       "}"
 
-      "if(!data.whiteActive && data.state == 8){"
+      "if(!data.whiteActive && data.state == 7){"
         "document.getElementById('blackBox').classList.add('active');"
       "}"
 
@@ -334,9 +404,26 @@ void sendGameStatus() {
 message += "\"blackIncrement\":" + String(blackIncrement) + ",";
 
 message += "\"whiteMoves\":" + String(whiteMoveCount) + ",";
-message += "\"blackMoves\":" + String(blackMoveCount);
+message += "\"blackMoves\":" + String(blackMoveCount) + ",";
 
-  message += "}";
+message += "\"whiteTotalThinking\":" + String(whiteTotalThinkingTime) + ",";
+message += "\"blackTotalThinking\":" + String(blackTotalThinkingTime) + ",";
+
+message += "\"whiteAverageMove\":" +
+           String(whiteThinkingCount > 0 ?
+           whiteTotalThinkingTime / whiteThinkingCount : 0) + ",";
+
+message += "\"blackAverageMove\":" +
+           String(blackThinkingCount > 0 ?
+           blackTotalThinkingTime / blackThinkingCount : 0) + ",";
+
+message += "\"whiteLongestMove\":" + String(whiteLongestMove) + ",";
+message += "\"blackLongestMove\":" + String(blackLongestMove) + ",";
+
+message += "\"whiteShortestMove\":" + String(whiteShortestMove) + ",";
+message += "\"blackShortestMove\":" + String(blackShortestMove);
+
+message += "}";
 
   webSocket.broadcastTXT(message);
 }
@@ -640,30 +727,49 @@ void loop() {
   }
 
   // --- Normal game buttons ---
-  if (wasPressed(btnStart)) {
-    if (gameState == READY || gameState == PAUSED) {
-      gameState = RUNNING;
-      showTime(displayWhite, whiteTimeLeft);
-      showTime(displayBlack, blackTimeLeft);
+if (wasPressed(btnStart)) {
+  if (gameState == READY || gameState == PAUSED) {
 
-      if (!gameStartLogged) {
-        Serial.print("GAME STARTED at: ");
-        printTimestamp(safeRtcNow());
-        gameStartLogged = true;
-      }
-      sendGameStatus();
+    gameState = RUNNING;
+
+    if (whiteActive) {
+      whiteTurnStart = now;
+    } else {
+      blackTurnStart = now;
     }
-  }
 
-  if (wasPressed(btnPause)) {
-    if (gameState == RUNNING) {
-      gameState = PAUSED;
-      digitalWrite(LED_WHITE_PIN, LOW);
-      digitalWrite(LED_BLACK_PIN, LOW);
+    showTime(displayWhite, whiteTimeLeft);
+    showTime(displayBlack, blackTimeLeft);
 
-      sendGameStatus();
+    if (!gameStartLogged) {
+      Serial.print("GAME STARTED at: ");
+      printTimestamp(safeRtcNow());
+      gameStartLogged = true;
     }
+
+    sendGameStatus();
   }
+}
+
+ if (wasPressed(btnPause)) {
+  if (gameState == RUNNING) {
+
+    if (whiteActive) {
+      whitePausedThinking += (now - whiteTurnStart) / 1000;
+      whiteTurnStart = 0;
+    } else {
+      blackPausedThinking += (now - blackTurnStart) / 1000;
+      blackTurnStart = 0;
+    }
+
+    gameState = PAUSED;
+
+    digitalWrite(LED_WHITE_PIN, LOW);
+    digitalWrite(LED_BLACK_PIN, LOW);
+
+    sendGameStatus();
+  }
+}
 
   if (wasPressed(btnReset)) {
     if (gameStartLogged) {
@@ -675,9 +781,27 @@ void loop() {
 
   if (wasPressed(btnWhite)) {
     if (gameState == RUNNING && whiteActive) {
+
+    unsigned long thinkingTime = whitePausedThinking + (now - whiteTurnStart) / 1000;
+
+if (whiteThinkingCount < MAX_MOVES) {
+  whiteThinkingTime[whiteThinkingCount] = thinkingTime;
+  whiteThinkingCount++;
+}
+
+whiteTotalThinkingTime += thinkingTime;
+
+if (thinkingTime > whiteLongestMove)
+  whiteLongestMove = thinkingTime;
+
+if (whiteShortestMove == 0 || thinkingTime < whiteShortestMove)
+  whiteShortestMove = thinkingTime;
+
+      whitePausedThinking = 0;
       whiteTimeLeft += whiteIncrement;
       whiteMoveCount++;
       whiteActive = false;
+      blackTurnStart = now;
       showTime(displayWhite, whiteTimeLeft);
 
       sendGameStatus();
@@ -694,9 +818,26 @@ void loop() {
 
   if (wasPressed(btnBlack)) {
     if (gameState == RUNNING && !whiteActive) {
+
+      unsigned long thinkingTime = blackPausedThinking + (now - blackTurnStart) / 1000;
+if (blackThinkingCount < MAX_MOVES) {
+  blackThinkingTime[blackThinkingCount] = thinkingTime;
+  blackThinkingCount++;
+}
+
+blackTotalThinkingTime += thinkingTime;
+
+if (thinkingTime > blackLongestMove)
+  blackLongestMove = thinkingTime;
+
+if (blackShortestMove == 0 || thinkingTime < blackShortestMove)
+  blackShortestMove = thinkingTime;
+
+      blackPausedThinking = 0;
       blackTimeLeft += blackIncrement;
       blackMoveCount++;
       whiteActive = true;
+      whiteTurnStart = now;
       showTime(displayBlack, blackTimeLeft);
 
       sendGameStatus();
@@ -773,9 +914,28 @@ void resetToDefault() {
   blackTimeLeft = 5L * 60;
   whiteActive = true;
 
-   whiteMoveCount = 0;
-   blackMoveCount = 0;
-  gameState = READY;
+  whiteMoveCount = 0;
+blackMoveCount = 0;
+
+whiteTurnStart = 0;
+blackTurnStart = 0;
+
+whitePausedThinking = 0;
+blackPausedThinking = 0;
+
+whiteThinkingCount = 0;
+blackThinkingCount = 0;
+
+whiteTotalThinkingTime = 0;
+blackTotalThinkingTime = 0;
+
+whiteLongestMove = 0;
+blackLongestMove = 0;
+
+whiteShortestMove = 0;
+blackShortestMove = 0;
+
+gameState = READY;
 
   digitalWrite(LED_WHITE_PIN, LOW);
   digitalWrite(LED_BLACK_PIN, LOW);
@@ -786,6 +946,7 @@ void resetToDefault() {
   showTime(displayWhite, whiteTimeLeft);
   showTime(displayBlack, blackTimeLeft);
   printGameStatus();
+  sendGameStatus();
   
 }
 
