@@ -1,0 +1,325 @@
+ADVANCED DIGITAL CHESS CLOCK WITH GAME DATA LOGGING
+
+1. PROJECT OVERVIEW
+The Advanced Digital Chess Clock is an ESP32-based electronic chess clock designed to provide accurate and configurable time control for two players. It uses two physical digital displays, physical controls, local game-data storage, and the ESP32's built-in Wi-Fi for a web dashboard. Automatic chessboard piece detection is an optional advanced subsystem.
+
+2. OBJECTIVES
+- Build a reliable two-player digital chess clock using ESP32.
+- Support configurable chess time-control modes.
+- Provide clear physical time displays and controls.
+- Store game information locally on MicroSD.
+- Provide real-time game information and analytics through a Wi-Fi web dashboard.
+- Use an RTC for real-world timestamps.
+- Add battery monitoring, power management, and watchdog recovery.
+- Optionally detect chessboard piece movements automatically.
+
+3. CORE FEATURES
+- Two-player countdown clock.
+- White and Black physical clock displays.
+- Sudden Death.
+- Fischer Increment.
+- Bronstein Delay.
+- Start, pause, resume and reset.
+- Rotary-encoder based configuration.
+- Buzzer and LED alerts.
+- Local game-data storage.
+- ESP32 Wi-Fi web dashboard.
+- Game information and analytics on the web dashboard.
+- Persistent settings using ESP32 NVS/internal flash.
+- DS3231 timestamps.
+- Battery monitoring and power management.
+- ESP32 watchdog.
+- Optional automatic chessboard movement detection.
+
+4. COMPONENT LIST
+
+MAIN CONTROLLER
+1. ESP32 DevKit V1 / 38-pin x1
+
+TIME DISPLAY
+2. TM1637 4-digit 7-segment display x2
+
+PHYSICAL CONTROLS
+3. Push buttons x6
+4. KY-040 rotary encoder x1
+
+ALERTS
+5. Piezo buzzer x1
+6. LEDs x3
+7. 220 ohm resistors x5
+8. 10k ohm resistors x4
+
+TIME / TIMESTAMP
+9. DS3231 RTC module x1
+
+STORAGE
+10. MicroSD card module x1
+11. MicroSD card, 8–32 GB x1
+
+I/O EXPANSION
+12. MCP23017 I/O expander x1 or more
+
+OPTIONAL AUTOMATIC CHESSBOARD DETECTION
+13. Reed switches x64, only if the final reed-switch architecture is selected
+14. Small magnets x32–64, depending on the sensing design
+15. Chessboard + chess pieces x1 set
+
+Alternative to reed switches:
+- Hall-effect sensors + magnets.
+
+POWER
+16. 18650 Li-ion battery x1
+17. TP4056 charging/protection module x1
+18. Suitable buck/boost voltage regulator x1
+19. Power switch x1
+
+PROTOTYPING / FINAL ASSEMBLY
+20. Breadboards x2
+21. Jumper wires x1 set
+22. USB cable x1
+23. Perfboard x1
+24. Headers/connectors/wires as required
+25. Enclosure x1
+
+OPTIONAL
+26. External watchdog IC x1 (not required initially; ESP32 has a built-in hardware watchdog)
+
+5. INTERFACES
+- ESP32 GPIO: buttons, rotary encoder, buzzer, LEDs and direct digital signals.
+- TM1637: dedicated two-wire interface; it is NOT standard I2C.
+- I2C: DS3231 and MCP23017.
+- SPI: MicroSD module.
+- ADC: battery-voltage monitoring through an appropriate voltage divider.
+- Wi-Fi: built into ESP32 for the web dashboard.
+- HTTP: web-server communication.
+- WebSockets: optional for live dashboard updates.
+- NVS/internal flash: persistent settings.
+
+6. SYSTEM ARCHITECTURE
+
+                 +----------------------+
+                 |       ESP32          |
+                 |   Main Controller    |
+                 +----------+-----------+
+                            |
+       +--------------------+----------------------+
+       |          |          |          |           |
+       v          v          v          v           v
+    TM1637     Buttons    Encoder    Buzzer       LEDs
+    x2         /Input
+       |
+    Player
+     clocks
+
+       +--------------------+----------------------+
+       |                    |                      |
+       v                    v                      v
+    DS3231               MicroSD                 Wi-Fi
+       |                    |                      |
+  Timestamps          Game Storage          Web Dashboard
+                                                  |
+                                         Analytics / History
+                                         Live Game Status
+
+Optional:
+Chessboard sensors -> MCP23017/GPIO -> ESP32 -> MOVE EVENT -> Clock
+
+7. DESIGN PRINCIPLE
+All move-input sources should eventually produce a common MOVE EVENT.
+
+Button press -----------+
+Reed/Hall sensor -------+----> MOVE EVENT -> Game Manager -> Clock
+Future detection system-+
+
+The automatic detection system does not need to check whether a chess move is legal. Its purpose is to detect a reliable physical board-state change and avoid false triggers from hand movement.
+
+8. SOFTWARE / GAME STATES
+Recommended high-level flow:
+
+STARTUP -> MENU -> SETUP -> READY -> GAME -> GAME OVER -> SAVE GAME -> ANALYTICS
+
+During GAME:
+WHITE TURN <-> BLACK TURN
+
+The countdown should use non-blocking elapsed-time calculations. Do not implement the main clock with delay(1000); time--.
+
+9. TIME CONTROL MODES
+Sudden Death:
+- Fixed starting time.
+- No increment.
+
+Fischer Increment:
+- Fixed starting time.
+- Additional time is added after a move.
+- Example: 10 minutes + 5 seconds.
+
+Bronstein Delay:
+- A delay is applied before the player's main clock decreases.
+
+10. WEB DASHBOARD
+The ESP32 can host a local web server.
+
+Possible dashboard sections:
+- Current game status.
+- White and Black clock information.
+- Active player.
+- Selected time-control mode.
+- Game progress.
+- Time-pressure/status indicators.
+- Game analytics.
+- Saved game history.
+- Game/session information.
+- Device/system status.
+- Configuration/settings.
+
+The physical OLED has been removed from the design because the web dashboard handles detailed information and analytics.
+
+11. GAME DATA LOGGING
+The MicroSD card can store:
+- Game/session ID.
+- Date and time.
+- Time-control mode.
+- Starting configuration.
+- Event information.
+- Final result/status.
+- Other useful analytics.
+
+The DS3231 supplies real-world timestamps. The ESP32 remains responsible for the actual countdown.
+
+12. AUTOMATIC CHESSBOARD DETECTION
+This is an optional advanced subsystem.
+
+Initial concept:
+- Place a magnet in or under a chess piece.
+- Place a reed switch or Hall sensor under each relevant square.
+- Detect square occupancy.
+- Compare the board state before and after a change.
+- Wait for the board state to stabilize before generating a MOVE EVENT.
+
+The system does not need to determine legal/illegal moves.
+
+Development:
+2x2 prototype -> larger section -> full-board architecture.
+
+Do not purchase 64 sensors before the small prototype works.
+
+13. POWER MANAGEMENT
+Start development using USB power.
+
+Later:
+18650 battery -> TP4056 charging/protection -> appropriate regulator -> ESP32/system
+
+Important:
+- TP4056 is a charging/protection module, not a complete voltage regulator.
+- Select the final regulator for the exact ESP32 board and power architecture.
+- Wi-Fi can create current spikes, so the supply must be stable.
+- Initially use deep sleep only for inactivity/between games, not during an active game.
+
+14. WATCHDOG
+The ESP32 built-in hardware watchdog can recover the system from software lockups.
+
+Example:
+Normal operation -> software stuck -> watchdog timeout -> ESP32 reset -> startup diagnostics -> normal operation.
+
+External watchdog IC can be added later as a stretch feature.
+
+15. DEVELOPMENT / TESTING ORDER
+Phase 1: ESP32 + one TM1637; display numbers and test countdown.
+Phase 2: Add second TM1637; test two clocks.
+Phase 3: Add buttons; test turn switching, start/pause/reset.
+Phase 4: Add rotary encoder; build menu and settings.
+Phase 5: Implement Sudden Death, Fischer and Bronstein.
+Phase 6: Add buzzer and LEDs.
+Phase 7: Add DS3231 and timestamps.
+Phase 8: Add MicroSD and game logging.
+Phase 9: Add Wi-Fi web dashboard and analytics.
+Phase 10: Add NVS persistent settings.
+Phase 11: Add battery monitoring.
+Phase 12: Add power management.
+Phase 13: Add watchdog and diagnostics.
+Phase 14: Prototype chessboard sensing.
+Phase 15: Full integration testing.
+Phase 16: Perfboard/final soldering.
+Phase 17: Enclosure and final presentation.
+
+16. TESTING STRATEGY
+For every subsystem:
+1. Build.
+2. Test.
+3. Fix.
+4. Stress test.
+5. Integrate.
+6. Test again.
+
+Test displays, buttons, encoder, SD writing, Wi-Fi dashboard and board sensors independently before full integration.
+
+17. FINAL ASSEMBLY
+Recommended workflow:
+
+Breadboard -> Working prototype -> Stress testing -> Perfboard -> Enclosure -> Optional custom PCB
+
+Do not solder the final circuit before the electronics and software are stable.
+
+18. SCOPE
+
+CORE
+- ESP32
+- Two TM1637 displays
+- Buttons
+- Rotary encoder
+- Buzzer
+- LEDs
+- Time-control modes
+- Basic game management
+
+ADVANCED
+- DS3231
+- MicroSD logging
+- Web dashboard
+- Real-time analytics
+- NVS settings
+- Battery monitoring
+- Power management
+- Watchdog
+- Startup diagnostics
+
+OPTIONAL / STRETCH
+- Automatic chessboard detection
+- Hall/reed sensor matrix
+- Cloud synchronization
+- External watchdog
+- Custom PCB
+
+19. FINAL SYSTEM
+The completed device will function as a standalone digital chess clock with two clear physical player displays and physical controls. The ESP32 manages game timing and state, saves game information locally, and provides a Wi-Fi web dashboard for detailed game information and analytics.
+
+Automatic chessboard detection remains modular and should only be included if the sensor architecture proves reliable.
+
+20. PURCHASE STRATEGY
+Do not buy every component at once.
+
+Initial purchase:
+- ESP32
+- 2 x TM1637
+- Push buttons
+- Rotary encoder
+- Buzzer
+- LEDs
+- Resistors
+- Breadboards
+- Jumper wires
+- USB cable
+
+Later:
+- DS3231
+- MicroSD module + card
+- MCP23017
+- Battery system
+- Chessboard sensors
+- Perfboard
+- Enclosure
+
+Do not purchase 64 reed/Hall sensors until a small sensor prototype is successful.
+
+PROJECT SUMMARY
+The Advanced Digital Chess Clock is an ESP32-based embedded system combining digital time control, physical controls, local game-data storage, Wi-Fi connectivity and a web interface for game information and analytics. It also provides a modular path toward automatic chessboard movement detection while keeping the core clock reliable and achievable.
