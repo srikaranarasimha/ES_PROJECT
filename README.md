@@ -20,6 +20,34 @@ The sketch retains the prototype's GPIO assignments; check the wiring before
 uploading. The dashboard displays live clock and move-thinking statistics but
 does not control the clock remotely.
 
-MicroSD game logging, Bronstein delay, persistent settings, battery management,
-watchdog handling, buzzer alerts, and automatic board sensing are not
-implemented in this prototype.
+### Power management
+
+- The ESP32 runs at 80 MHz, uses Wi-Fi modem sleep, and dims the displays when
+  the clock is not running.
+- After 2 minutes without physical input in READY or PAUSED, it disconnects
+  Wi-Fi and enters light sleep. Press the Start button (GPIO 27) to wake; that
+  press only wakes the device. Press Start again to start or resume. The
+  dashboard is unavailable during sleep and reconnects afterward.
+- If still idle at 5 minutes, it saves the selected time control and READY or
+  PAUSED game state to NVS, then enters deep sleep. Press Start to wake, then
+  press it again to start or resume. A paused game can then be resumed.
+- The running clock never enters sleep. Configuration and GAME OVER also stay
+  awake.
+
+  GPIO 15 is assigned to a single 300 ms timeout beep. It is an ESP32 strapping pin, so
+  use a small 3.3 V passive piezo and do not add a strong pull-up or pull-down to
+  it. A 5 V or active buzzer needs a transistor driver and a wiring design that
+  does not disturb boot strapping.
+
+Deep sleep restarts the ESP32 and turns off its Wi-Fi. A USB power bank may
+shut itself off at the resulting low load; test your specific power source.
+The Start button must pull GPIO 27 to ground when pressed for sleep wake-up.
+The displays are blanked, but their supply is not physically switched off.
+Further savings require suitable display power switching and compatible
+hardware. Verify the battery output is regulated 5 V and use the board's
+documented power input; never connect a bare cell directly to a 5 V or 3.3 V
+pin.
+
+MicroSD game logging, Bronstein delay, battery-voltage monitoring, watchdog
+handling, buzzer alerts, and automatic board sensing are not implemented in
+this prototype.

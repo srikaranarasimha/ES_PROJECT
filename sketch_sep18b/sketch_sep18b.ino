@@ -4,6 +4,10 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
+#include <Preferences.h>
+#include <esp_sleep.h>
+#include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include <string.h>
 
 #if defined(__has_include)
@@ -39,6 +43,8 @@
 #define LED_WHITE_PIN 22
 #define LED_BLACK_PIN 21
 #define LED_ALERT_PIN 2
+// GPIO 15 is unused here, but is an ESP32 boot-strap pin.
+#define BUZZER_PIN 15
 
 #define RTC_SDA 23
 #define RTC_SCL 4
@@ -46,6 +52,7 @@
 TM1637Display displayWhite(CLK1, DIO1);
 TM1637Display displayBlack(CLK2, DIO2);
 RTC_DS3231 rtc;
+Preferences preferences;
 WebServer server(80);
 WebSocketsServer webSocket(81);
 
@@ -76,6 +83,19 @@ struct PlayerStats {
   uint32_t shortestMoveSeconds;
 };
 
+struct SleepSnapshot {
+  uint32_t magic;
+  uint8_t version;
+  uint8_t state;
+  uint8_t whiteActive;
+  uint8_t gameStartLogged;
+  int64_t whiteTimeLeftMs;
+  int64_t blackTimeLeftMs;
+  uint64_t pausedTurnMs;
+  PlayerStats whiteStats;
+  PlayerStats blackStats;
+};
+
 Button btnWhite = {BTN_WHITE, HIGH, HIGH, 0};
 Button btnBlack = {BTN_BLACK, HIGH, HIGH, 0};
 Button btnStart = {BTN_START, HIGH, HIGH, 0};
@@ -104,15 +124,29 @@ bool wifiWasConnected = false;
 uint32_t activeTurnStartMs = 0;
 uint64_t pausedTurnMs = 0;
 uint32_t lastClockUpdateMs = 0;
+uint32_t lastUserActivityMs = 0;
 uint32_t lastBlinkMs = 0;
 uint32_t lastConfigBlinkMs = 0;
+int currentDisplayBrightness = -1;
 int lastEncoderClockState = HIGH;
 bool blinkState = false;
 bool configBlinkOn = true;
+bool restoredAfterDeepSleep = false;
+bool timeoutBuzzerActive = false;
+uint32_t timeoutBuzzerPhaseStartMs = 0;
 
 const uint32_t DEBOUNCE_MS = 35;
 const uint32_t CONFIG_BLINK_MS = 400;
 const uint32_t LOW_TIME_THRESHOLD_SECONDS = 30;
+const uint32_t TIMEOUT_BEEP_DURATION_MS = 300;
+const uint16_t TIMEOUT_BEEP_FREQUENCY_HZ = 2400;
+const uint32_t LIGHT_SLEEP_AFTER_MS = 2UL * 60 * 1000;
+const uint32_t DEEP_SLEEP_AFTER_MS = 5UL * 60 * 1000;
+const uint8_t DISPLAY_IDLE_BRIGHTNESS = 2;
+const uint8_t DISPLAY_RUNNING_BRIGHTNESS = 5;
+const uint32_t SLEEP_SNAPSHOT_MAGIC = 0x434C4B31;
+const uint8_t SLEEP_SNAPSHOT_VERSION = 1;
+const gpio_num_t WAKE_BUTTON_GPIO = GPIO_NUM_27;
 const char *gameResult = "No result";
 
 const char DASHBOARD_HTML[] PROGMEM = R"HTML(
@@ -307,6 +341,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 )HTML";
 
 bool wasPressed(Button &button);
+void synchronizeButtonState(Button &button);
 int readEncoderDelta();
 void updateSetupDisplay();
 void showTime(TM1637Display &display, int64_t millisecondsLeft);
@@ -320,6 +355,16 @@ void logTimestamp(const char *event);
 const char *stateName(GameState state);
 uint32_t clockSecondsLeft(int64_t millisecondsLeft);
 void startOrResume(uint32_t now);
+void loadPersistentState();
+bool savePersistentSettings();
+bool saveSleepSnapshot();
+void updateDisplayBrightness();
+void enterIdleSleep();
+bool enterDeepSleep();
+void restoreAfterLightSleep();
+void startTimeoutBuzzer(uint32_t now);
+void updateTimeoutBuzzer(uint32_t now);
+void stopTimeoutBuzzer();
 
 void handleRoot() {
   server.send_P(200, "text/html", DASHBOARD_HTML);
@@ -381,10 +426,10 @@ void sendGameStatus() {
 }
 
 void setup() {
+  setCpuFrequencyMhz(80);
   Serial.begin(115200);
 
-  displayWhite.setBrightness(0x0f);
-  displayBlack.setBrightness(0x0f);
+  loadPersistentState();
 
   pinMode(BTN_WHITE, INPUT_PULLUP);
   pinMode(BTN_BLACK, INPUT_PULLUP);
@@ -394,13 +439,18 @@ void setup() {
   pinMode(ENC_CLK, INPUT_PULLUP);
   pinMode(ENC_DT, INPUT_PULLUP);
   pinMode(ENC_SW, INPUT_PULLUP);
+  if (restoredAfterDeepSleep) {
+    synchronizeButtonState(btnStart);
+  }
 
   pinMode(LED_WHITE_PIN, OUTPUT);
   pinMode(LED_BLACK_PIN, OUTPUT);
   pinMode(LED_ALERT_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(LED_WHITE_PIN, LOW);
   digitalWrite(LED_BLACK_PIN, LOW);
   digitalWrite(LED_ALERT_PIN, LOW);
+  digitalWrite(BUZZER_PIN, LOW);
 
   Wire.begin(RTC_SDA, RTC_SCL);
   Wire.setTimeOut(1000);
@@ -415,6 +465,7 @@ void setup() {
 
   // Initialize lwIP before binding either server socket.
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(true);
   WiFi.setAutoReconnect(true);
   if (strlen(WIFI_SSID) > 0) {
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -430,8 +481,14 @@ void setup() {
 
   lastEncoderClockState = digitalRead(ENC_CLK);
   lastClockUpdateMs = millis();
+  lastUserActivityMs = lastClockUpdateMs;
+  updateDisplayBrightness();
   showTime(displayWhite, whiteTimeLeftMs);
   showTime(displayBlack, blackTimeLeftMs);
+  if (restoredAfterDeepSleep) {
+    Serial.println("Restored the saved idle game state.");
+  }
+  Serial.printf("CPU frequency: %u MHz\n", getCpuFrequencyMhz());
   Serial.println("Chess clock ready.");
 }
 
@@ -459,8 +516,10 @@ void loop() {
   maintainWifi();
 
   updateClock(now);
+  updateDisplayBrightness();
   if (gameState == GAME_OVER) {
     if (wasPressed(btnReset)) resetGame();
+    updateTimeoutBuzzer(millis());
     updateIndicators(now);
     return;
   }
@@ -539,6 +598,7 @@ void loop() {
   }
 
   updateIndicators(now);
+  enterIdleSleep();
 }
 
 void startOrResume(uint32_t now) {
@@ -574,6 +634,9 @@ void updateClock(uint32_t now) {
     digitalWrite(LED_WHITE_PIN, LOW);
     digitalWrite(LED_BLACK_PIN, LOW);
     digitalWrite(LED_ALERT_PIN, HIGH);
+    showTime(displayWhite, whiteTimeLeftMs);
+    showTime(displayBlack, blackTimeLeftMs);
+    startTimeoutBuzzer(now);
     logTimestamp("GAME OVER");
     Serial.println(gameResult);
     sendGameStatus();
@@ -622,6 +685,7 @@ void recordMove(uint32_t now) {
 }
 
 void resetGame() {
+  stopTimeoutBuzzer();
   whiteTimeLeftMs = (static_cast<int64_t>(whiteSetMinutes) * 60 + whiteSetSeconds) * 1000;
   blackTimeLeftMs = (static_cast<int64_t>(blackSetMinutes) * 60 + blackSetSeconds) * 1000;
   whiteStats = {0, 0, 0, 0};
@@ -642,8 +706,220 @@ void resetGame() {
   sendGameStatus();
 }
 
+void startTimeoutBuzzer(uint32_t now) {
+  timeoutBuzzerActive = true;
+  timeoutBuzzerPhaseStartMs = now;
+  tone(BUZZER_PIN, TIMEOUT_BEEP_FREQUENCY_HZ, TIMEOUT_BEEP_DURATION_MS);
+}
+
+void updateTimeoutBuzzer(uint32_t now) {
+  if (timeoutBuzzerActive &&
+      static_cast<uint32_t>(now - timeoutBuzzerPhaseStartMs) >= TIMEOUT_BEEP_DURATION_MS) {
+    timeoutBuzzerActive = false;
+  }
+}
+
+void stopTimeoutBuzzer() {
+  if (timeoutBuzzerActive) noTone(BUZZER_PIN);
+  digitalWrite(BUZZER_PIN, LOW);
+  timeoutBuzzerActive = false;
+}
+
 void commitConfiguration() {
   resetGame();
+  savePersistentSettings();
+}
+
+void loadPersistentState() {
+  SleepSnapshot snapshot = {};
+
+  if (!preferences.begin("chessclk", false)) {
+    Serial.println("Could not open NVS; using default clock settings.");
+    whiteTimeLeftMs = 5LL * 60 * 1000;
+    blackTimeLeftMs = 5LL * 60 * 1000;
+    return;
+  }
+  whiteSetMinutes = constrain(preferences.getInt("wmin", whiteSetMinutes), 0, 99);
+  whiteSetSeconds = constrain(preferences.getInt("wsec", whiteSetSeconds), 0, 59);
+  blackSetMinutes = constrain(preferences.getInt("bmin", blackSetMinutes), 0, 99);
+  blackSetSeconds = constrain(preferences.getInt("bsec", blackSetSeconds), 0, 59);
+  whiteIncrement = constrain(preferences.getInt("winc", whiteIncrement), 0, 60);
+  blackIncrement = constrain(preferences.getInt("binc", blackIncrement), 0, 60);
+
+  const bool hasSnapshot = preferences.getBool("sleep", false);
+  const bool snapshotAvailable =
+    preferences.getBytesLength("state") == sizeof(snapshot) &&
+    preferences.getBytes("state", &snapshot, sizeof(snapshot)) == sizeof(snapshot);
+
+  if (hasSnapshot && snapshotAvailable &&
+      snapshot.magic == SLEEP_SNAPSHOT_MAGIC &&
+      snapshot.version == SLEEP_SNAPSHOT_VERSION &&
+      (snapshot.state == READY || snapshot.state == PAUSED) &&
+      snapshot.whiteTimeLeftMs >= 0 && snapshot.blackTimeLeftMs >= 0) {
+    gameState = static_cast<GameState>(snapshot.state);
+    whiteActive = snapshot.whiteActive != 0;
+    gameStartLogged = snapshot.gameStartLogged != 0;
+    whiteTimeLeftMs = snapshot.whiteTimeLeftMs;
+    blackTimeLeftMs = snapshot.blackTimeLeftMs;
+    pausedTurnMs = snapshot.pausedTurnMs;
+    whiteStats = snapshot.whiteStats;
+    blackStats = snapshot.blackStats;
+    restoredAfterDeepSleep = true;
+  } else {
+    whiteTimeLeftMs =
+      (static_cast<int64_t>(whiteSetMinutes) * 60 + whiteSetSeconds) * 1000;
+    blackTimeLeftMs =
+      (static_cast<int64_t>(blackSetMinutes) * 60 + blackSetSeconds) * 1000;
+  }
+
+  if (hasSnapshot && !preferences.putBool("sleep", false)) {
+    Serial.println("Could not clear the restored sleep-state marker.");
+  }
+  preferences.end();
+}
+
+bool savePersistentSettings() {
+  if (!preferences.begin("chessclk", false)) {
+    Serial.println("Could not open NVS to save clock settings.");
+    return false;
+  }
+  bool saved = preferences.putInt("wmin", whiteSetMinutes) == sizeof(int);
+  saved = preferences.putInt("wsec", whiteSetSeconds) == sizeof(int) && saved;
+  saved = preferences.putInt("bmin", blackSetMinutes) == sizeof(int) && saved;
+  saved = preferences.putInt("bsec", blackSetSeconds) == sizeof(int) && saved;
+  saved = preferences.putInt("winc", whiteIncrement) == sizeof(int) && saved;
+  saved = preferences.putInt("binc", blackIncrement) == sizeof(int) && saved;
+  preferences.end();
+  if (!saved) Serial.println("Failed to persist one or more clock settings.");
+  return saved;
+}
+
+bool saveSleepSnapshot() {
+  SleepSnapshot snapshot = {};
+  snapshot.magic = SLEEP_SNAPSHOT_MAGIC;
+  snapshot.version = SLEEP_SNAPSHOT_VERSION;
+  snapshot.state = static_cast<uint8_t>(gameState);
+  snapshot.whiteActive = whiteActive ? 1 : 0;
+  snapshot.gameStartLogged = gameStartLogged ? 1 : 0;
+  snapshot.whiteTimeLeftMs = whiteTimeLeftMs;
+  snapshot.blackTimeLeftMs = blackTimeLeftMs;
+  snapshot.pausedTurnMs = pausedTurnMs;
+  snapshot.whiteStats = whiteStats;
+  snapshot.blackStats = blackStats;
+
+  if (!preferences.begin("chessclk", false)) {
+    Serial.println("Could not open NVS to save paused game before sleep.");
+    return false;
+  }
+  const bool saved =
+    preferences.putBytes("state", &snapshot, sizeof(snapshot)) == sizeof(snapshot) &&
+    preferences.putBool("sleep", true);
+  preferences.end();
+  if (!saved) Serial.println("Failed to persist paused game before sleep.");
+  return saved;
+}
+
+void updateDisplayBrightness() {
+  const uint8_t brightness =
+    gameState == RUNNING ? DISPLAY_RUNNING_BRIGHTNESS : DISPLAY_IDLE_BRIGHTNESS;
+  if (currentDisplayBrightness == brightness) return;
+  displayWhite.setBrightness(brightness);
+  displayBlack.setBrightness(brightness);
+  currentDisplayBrightness = brightness;
+}
+
+void enterIdleSleep() {
+  if (gameState != READY && gameState != PAUSED) return;
+
+  const uint32_t now = millis();
+  const uint32_t idleMs = static_cast<uint32_t>(now - lastUserActivityMs);
+  if (idleMs < LIGHT_SLEEP_AFTER_MS) return;
+  if (idleMs >= DEEP_SLEEP_AFTER_MS) {
+    if (!enterDeepSleep()) restoreAfterLightSleep();
+    return;
+  }
+
+  const uint32_t remainingMs = DEEP_SLEEP_AFTER_MS - idleMs;
+
+  Serial.println("Idle: entering light sleep; press Start to wake.");
+  displayWhite.clear();
+  displayBlack.clear();
+  displayWhite.setBrightness(7, false);
+  displayBlack.setBrightness(7, false);
+  currentDisplayBrightness = -1;
+
+  if (strlen(WIFI_SSID) > 0) {
+    WiFi.disconnect(false, false);
+    wifiWasConnected = false;
+  }
+
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_enable(WAKE_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  if (remainingMs > 0) {
+    esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(remainingMs) * 1000ULL);
+  }
+
+  const esp_err_t sleepResult = esp_light_sleep_start();
+  const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  gpio_wakeup_disable(WAKE_BUTTON_GPIO);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+  if (sleepResult != ESP_OK) {
+    Serial.printf("Light sleep failed: %s\n", esp_err_to_name(sleepResult));
+    restoreAfterLightSleep();
+    return;
+  }
+
+  if (wakeCause == ESP_SLEEP_WAKEUP_TIMER &&
+      digitalRead(BTN_START) != LOW &&
+      (gameState == READY || gameState == PAUSED)) {
+    if (!enterDeepSleep()) restoreAfterLightSleep();
+    return;
+  }
+
+  restoreAfterLightSleep();
+  Serial.println("Woke from light sleep.");
+}
+
+void restoreAfterLightSleep() {
+  synchronizeButtonState(btnStart);
+  lastUserActivityMs = millis();
+  lastClockUpdateMs = lastUserActivityMs;
+  updateDisplayBrightness();
+  showTime(displayWhite, whiteTimeLeftMs);
+  showTime(displayBlack, blackTimeLeftMs);
+  if (strlen(WIFI_SSID) > 0) {
+    WiFi.reconnect();
+  }
+}
+
+bool enterDeepSleep() {
+  Serial.println("Idle for 5 minutes: saving game and entering deep sleep.");
+  if (!savePersistentSettings() || !saveSleepSnapshot()) {
+    Serial.println("Staying awake because deep-sleep state could not be saved.");
+    return false;
+  }
+
+  digitalWrite(LED_WHITE_PIN, LOW);
+  digitalWrite(LED_BLACK_PIN, LOW);
+  digitalWrite(LED_ALERT_PIN, LOW);
+  displayWhite.clear();
+  displayBlack.clear();
+  displayWhite.setBrightness(7, false);
+  displayBlack.setBrightness(7, false);
+
+  WiFi.mode(WIFI_OFF);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  rtc_gpio_init(WAKE_BUTTON_GPIO);
+  rtc_gpio_set_direction(WAKE_BUTTON_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
+  rtc_gpio_pullup_en(WAKE_BUTTON_GPIO);
+  rtc_gpio_pulldown_dis(WAKE_BUTTON_GPIO);
+  esp_sleep_enable_ext0_wakeup(WAKE_BUTTON_GPIO, 0);
+  Serial.flush();
+  esp_deep_sleep_start();
+  Serial.println("Deep sleep did not start.");
+  return false;
 }
 
 void updateIndicators(uint32_t now) {
@@ -678,15 +954,26 @@ bool wasPressed(Button &button) {
       reading != button.stableState) {
     button.stableState = reading;
     pressed = (button.stableState == LOW);
+    if (pressed) {
+      lastUserActivityMs = now;
+    }
   }
   button.lastReading = reading;
   return pressed;
+}
+
+void synchronizeButtonState(Button &button) {
+  const bool reading = digitalRead(button.pin);
+  button.lastReading = reading;
+  button.stableState = reading;
+  button.lastChangeTime = millis();
 }
 
 int readEncoderDelta() {
   const int clkState = digitalRead(ENC_CLK);
   if (clkState == lastEncoderClockState) return 0;
   lastEncoderClockState = clkState;
+  lastUserActivityMs = millis();
   return digitalRead(ENC_DT) != clkState ? 1 : -1;
 }
 
