@@ -5,10 +5,16 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <Preferences.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(__has_include)
 #if __has_include("secrets.h")
@@ -22,6 +28,18 @@
 
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD ""
+#endif
+
+#ifndef ADAFRUIT_IO_USERNAME
+#define ADAFRUIT_IO_USERNAME ""
+#endif
+
+#ifndef ADAFRUIT_IO_KEY
+#define ADAFRUIT_IO_KEY ""
+#endif
+
+#ifndef ADAFRUIT_IO_FEED_KEY
+#define ADAFRUIT_IO_FEED_KEY ""
 #endif
 
 // Pin assignments match the existing prototype wiring.
@@ -96,6 +114,10 @@ struct SleepSnapshot {
   PlayerStats blackStats;
 };
 
+struct TelemetrySnapshot {
+  char json[768];
+};
+
 Button btnWhite = {BTN_WHITE, HIGH, HIGH, 0};
 Button btnBlack = {BTN_BLACK, HIGH, HIGH, 0};
 Button btnStart = {BTN_START, HIGH, HIGH, 0};
@@ -127,12 +149,14 @@ uint32_t lastClockUpdateMs = 0;
 uint32_t lastUserActivityMs = 0;
 uint32_t lastBlinkMs = 0;
 uint32_t lastConfigBlinkMs = 0;
+uint32_t lastTelemetryQueuedMs = 0;
 int currentDisplayBrightness = -1;
 int lastEncoderClockState = HIGH;
 bool blinkState = false;
 bool configBlinkOn = true;
 bool restoredAfterDeepSleep = false;
 bool timeoutBuzzerActive = false;
+bool telemetryNtpStarted = false;
 uint32_t timeoutBuzzerPhaseStartMs = 0;
 
 const uint32_t DEBOUNCE_MS = 35;
@@ -146,8 +170,34 @@ const uint8_t DISPLAY_IDLE_BRIGHTNESS = 2;
 const uint8_t DISPLAY_RUNNING_BRIGHTNESS = 5;
 const uint32_t SLEEP_SNAPSHOT_MAGIC = 0x434C4B31;
 const uint8_t SLEEP_SNAPSHOT_VERSION = 1;
+const uint32_t TELEMETRY_INTERVAL_MS = 3000;
+const size_t TELEMETRY_VALUE_MAX_BYTES = 1024;
+const char *ADAFRUIT_IO_ROOT_CA = R"PEM(-----BEGIN CERTIFICATE-----
+MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
+MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
+d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH
+MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT
+MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
+b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI
+2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx
+1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ
+q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz
+tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ
+vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV
+5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY
+1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4
+NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG
+Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91
+8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe
+pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
+MrY=
+-----END CERTIFICATE-----
+)PEM";
 const gpio_num_t WAKE_BUTTON_GPIO = GPIO_NUM_27;
 const char *gameResult = "No result";
+QueueHandle_t telemetryQueue = nullptr;
 
 const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 <!doctype html>
@@ -365,6 +415,9 @@ void restoreAfterLightSleep();
 void startTimeoutBuzzer(uint32_t now);
 void updateTimeoutBuzzer(uint32_t now);
 void stopTimeoutBuzzer();
+String buildGameStatusJson();
+void queueTelemetryIfDue(uint32_t now);
+void telemetryPublisherTask(void *parameter);
 
 void handleRoot() {
   server.send_P(200, "text/html", DASHBOARD_HTML);
@@ -393,7 +446,7 @@ uint32_t clockSecondsLeft(int64_t millisecondsLeft) {
   return static_cast<uint32_t>((millisecondsLeft + 999) / 1000);
 }
 
-void sendGameStatus() {
+String buildGameStatusJson() {
   String message;
   message.reserve(600);
   message = "{";
@@ -422,7 +475,102 @@ void sendGameStatus() {
   message += "\"whiteShortestMove\":" + String(whiteStats.shortestMoveSeconds) + ",";
   message += "\"blackShortestMove\":" + String(blackStats.shortestMoveSeconds);
   message += "}";
+  return message;
+}
+
+void sendGameStatus() {
+  String message = buildGameStatusJson();
   webSocket.broadcastTXT(message);
+}
+
+void queueTelemetryIfDue(uint32_t now) {
+  if (telemetryQueue == nullptr ||
+      strlen(ADAFRUIT_IO_USERNAME) == 0 ||
+      strlen(ADAFRUIT_IO_KEY) == 0 ||
+      strlen(ADAFRUIT_IO_FEED_KEY) == 0 ||
+      WiFi.status() != WL_CONNECTED ||
+      static_cast<uint32_t>(now - lastTelemetryQueuedMs) < TELEMETRY_INTERVAL_MS) {
+    return;
+  }
+
+  const String message = buildGameStatusJson();
+  TelemetrySnapshot snapshot = {};
+  if (message.length() >= sizeof(snapshot.json)) {
+    Serial.println("Adafruit IO snapshot is too large; skipping this update.");
+    lastTelemetryQueuedMs = now;
+    return;
+  }
+
+  message.toCharArray(snapshot.json, sizeof(snapshot.json));
+  if (xQueueOverwrite(telemetryQueue, &snapshot) != pdPASS) {
+    Serial.println("Could not queue the Adafruit IO snapshot.");
+  }
+  lastTelemetryQueuedMs = now;
+}
+
+void telemetryPublisherTask(void *parameter) {
+  (void)parameter;
+  TelemetrySnapshot snapshot = {};
+
+  for (;;) {
+    if (xQueueReceive(telemetryQueue, &snapshot, portMAX_DELAY) != pdPASS) {
+      continue;
+    }
+
+    String body;
+    body.reserve(strlen(snapshot.json) + 16);
+    body = "{\"value\":\"";
+    for (const char *cursor = snapshot.json; *cursor != '\0'; ++cursor) {
+      if (*cursor == '"' || *cursor == '\\') body += '\\';
+      body += *cursor;
+    }
+    body += "\"}";
+
+    if (body.length() > TELEMETRY_VALUE_MAX_BYTES) {
+      Serial.println("Adafruit IO snapshot exceeds the feed's 1 KB value limit.");
+      continue;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Skipping Adafruit IO update because Wi-Fi is disconnected.");
+      continue;
+    }
+    if (time(nullptr) < 1700000000) {
+      if (!telemetryNtpStarted) {
+        configTime(0, 0, "pool.ntp.org", "time.google.com");
+        telemetryNtpStarted = true;
+      }
+      for (uint8_t attempt = 0; attempt < 20 && time(nullptr) < 1700000000; ++attempt) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+      }
+      if (time(nullptr) < 1700000000) {
+        Serial.println("Skipping Adafruit IO update because network time is not synchronized.");
+        continue;
+      }
+    }
+
+    WiFiClientSecure secureClient;
+    secureClient.setCACert(ADAFRUIT_IO_ROOT_CA);
+
+    HTTPClient http;
+    http.setConnectTimeout(5000);
+    http.setTimeout(5000);
+    const String url = String("https://io.adafruit.com/api/v2/") +
+      ADAFRUIT_IO_USERNAME + "/feeds/" + ADAFRUIT_IO_FEED_KEY + "/data";
+    if (!http.begin(secureClient, url)) {
+      Serial.println("Could not start the Adafruit IO HTTPS request.");
+      continue;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("X-AIO-Key", ADAFRUIT_IO_KEY);
+    const int responseCode = http.POST(body);
+    if (responseCode < 200 || responseCode >= 300) {
+      Serial.printf("Adafruit IO publish failed (HTTP %d).\n", responseCode);
+    } else {
+      Serial.println("Published clock status to Adafruit IO.");
+    }
+    http.end();
+  }
 }
 
 void setup() {
@@ -474,6 +622,23 @@ void setup() {
     Serial.println("Wi-Fi credentials not configured; clock is running offline.");
   }
 
+  if (strlen(ADAFRUIT_IO_USERNAME) > 0 &&
+      strlen(ADAFRUIT_IO_KEY) > 0 &&
+      strlen(ADAFRUIT_IO_FEED_KEY) > 0) {
+    telemetryQueue = xQueueCreate(1, sizeof(TelemetrySnapshot));
+    if (telemetryQueue == nullptr) {
+      Serial.println("Could not create the Adafruit IO telemetry queue.");
+    } else if (xTaskCreate(telemetryPublisherTask, "aio_publish", 8192, nullptr, 1, nullptr) != pdPASS) {
+      Serial.println("Could not start the Adafruit IO publisher task.");
+      vQueueDelete(telemetryQueue);
+      telemetryQueue = nullptr;
+    } else {
+      Serial.println("Adafruit IO telemetry publisher is ready.");
+    }
+  } else {
+    Serial.println("Adafruit IO not configured; cloud telemetry is disabled.");
+  }
+
   server.on("/", handleRoot);
   server.begin();
   webSocket.begin();
@@ -516,6 +681,7 @@ void loop() {
   maintainWifi();
 
   updateClock(now);
+  queueTelemetryIfDue(now);
   updateDisplayBrightness();
   if (gameState == GAME_OVER) {
     if (wasPressed(btnReset)) resetGame();

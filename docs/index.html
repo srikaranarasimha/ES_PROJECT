@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10141e">
+  <title>Chess Clock Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #10141e;
+      --panel: #191f2c;
+      --raised: #202838;
+      --text: #f3f5fa;
+      --muted: #9da8bb;
+      --line: #30394b;
+      --green: #63e6a5;
+      --gold: #f4c66a;
+      --red: #ff7185;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(ellipse at 50% -20%, #26314a 0, var(--bg) 58%);
+      color: var(--text);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .wrap { width: min(1060px, 100% - 32px); margin: 0 auto; padding: 28px 0 42px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; background: #2a354a; font-size: 23px; }
+    h1 { font-size: clamp(20px, 4vw, 27px); letter-spacing: -.03em; margin: 0; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-top: 2px; }
+    .connection { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 12px currentColor; }
+    .connection.online .dot { background: var(--green); }
+    .connection.offline .dot { background: var(--red); }
+    .clocks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .player { position: relative; overflow: hidden; padding: clamp(20px, 4vw, 32px); background: linear-gradient(145deg, var(--raised), var(--panel)); border: 1px solid var(--line); border-radius: 22px; transition: border-color .2s, transform .2s, box-shadow .2s; }
+    .player.active { border-color: var(--green); box-shadow: 0 0 0 1px #63e6a533, 0 14px 42px #0003; transform: translateY(-2px); }
+    .player.low .time { color: var(--gold); }
+    .player.flagged .time { color: var(--red); }
+    .player-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .player-name { color: var(--muted); font-size: 13px; font-weight: 750; letter-spacing: .14em; }
+    .turn { color: var(--green); font-size: 12px; font-weight: 700; opacity: 0; }
+    .active .turn { opacity: 1; }
+    .time { margin: 16px 0 18px; font: 700 clamp(58px, 12vw, 104px)/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.08em; font-variant-numeric: tabular-nums; }
+    .player-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 13px; }
+    .player-meta strong { color: var(--text); font-weight: 650; }
+    .statusbar { display: flex; align-items: center; gap: 10px; margin: 17px 0 25px; padding: 13px 16px; background: #171d29; border: 1px solid var(--line); border-radius: 14px; }
+    .state { font-size: 13px; font-weight: 800; letter-spacing: .08em; }
+    .result { margin-left: auto; color: var(--muted); font-size: 13px; text-align: right; }
+    .section-title { margin: 26px 2px 12px; color: var(--muted); font-size: 12px; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .stat { min-height: 91px; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 15px; }
+    .stat-label { color: var(--muted); font-size: 12px; }
+    .stat-value { margin-top: 7px; font-size: 20px; font-weight: 720; font-variant-numeric: tabular-nums; }
+    .footer { margin-top: 24px; color: var(--muted); font-size: 12px; text-align: center; }
+    @media (max-width: 650px) {
+      .wrap { width: min(100% - 22px, 520px); padding-top: 18px; }
+      .clocks { grid-template-columns: 1fr; gap: 11px; }
+      .player { padding: 19px 21px; }
+      .time { margin: 12px 0; font-size: clamp(62px, 17vw, 86px); }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+      .stat { min-height: 78px; padding: 12px; }
+      .stat-value { font-size: 18px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div class="brand">
+        <div class="mark" aria-hidden="true">♞</div>
+        <div><h1>Chess Clock</h1><div class="subtitle">Live game dashboard</div></div>
+      </div>
+      <div class="connection" id="connection"><span class="dot"></span><span id="connectionText">Waiting for telemetry</span></div>
+    </header>
+
+    <section class="clocks" aria-label="Player clocks">
+      <article class="player" id="whiteBox">
+        <div class="player-head"><span class="player-name">WHITE</span><span class="turn">YOUR TURN</span></div>
+        <div class="time" id="whiteTime">--:--</div>
+        <div class="player-meta"><span>Moves <strong id="whiteMoves">--</strong></span><span>Increment <strong id="whiteInc">--</strong></span></div>
+      </article>
+      <article class="player" id="blackBox">
+        <div class="player-head"><span class="player-name">BLACK</span><span class="turn">YOUR TURN</span></div>
+        <div class="time" id="blackTime">--:--</div>
+        <div class="player-meta"><span>Moves <strong id="blackMoves">--</strong></span><span>Increment <strong id="blackInc">--</strong></span></div>
+      </article>
+    </section>
+
+    <div class="statusbar">
+      <span class="dot" id="stateDot"></span><span class="state" id="status">WAITING</span>
+      <span class="result" id="result">No telemetry received yet</span>
+    </div>
+
+    <h2 class="section-title">Game setup</h2>
+    <section class="grid" aria-label="Game setup">
+      <div class="stat"><div class="stat-label">White starting time</div><div class="stat-value" id="whiteSet">--:--</div></div>
+      <div class="stat"><div class="stat-label">Black starting time</div><div class="stat-value" id="blackSet">--:--</div></div>
+      <div class="stat"><div class="stat-label">Time control</div><div class="stat-value" id="mode">--</div></div>
+      <div class="stat"><div class="stat-label">RTC</div><div class="stat-value" id="rtc">--</div></div>
+    </section>
+
+    <h2 class="section-title">Thinking-time analytics</h2>
+    <section class="grid" aria-label="Thinking-time analytics">
+      <div class="stat"><div class="stat-label">White total</div><div class="stat-value" id="whiteTotal">--</div></div>
+      <div class="stat"><div class="stat-label">Black total</div><div class="stat-value" id="blackTotal">--</div></div>
+      <div class="stat"><div class="stat-label">White average / move</div><div class="stat-value" id="whiteAverage">--</div></div>
+      <div class="stat"><div class="stat-label">Black average / move</div><div class="stat-value" id="blackAverage">--</div></div>
+      <div class="stat"><div class="stat-label">White longest move</div><div class="stat-value" id="whiteLongest">--</div></div>
+      <div class="stat"><div class="stat-label">Black longest move</div><div class="stat-value" id="blackLongest">--</div></div>
+      <div class="stat"><div class="stat-label">White shortest move</div><div class="stat-value" id="whiteShortest">--</div></div>
+      <div class="stat"><div class="stat-label">Black shortest move</div><div class="stat-value" id="blackShortest">--</div></div>
+    </section>
+    <p class="footer">Read-only public view. Use the physical clock controls to start, pause, or reset a game.</p>
+  </main>
+  <script src="./config.js"></script>
+  <script>
+    const config = window.CHESS_CLOCK_CONFIG || {};
+    const connection = document.getElementById('connection');
+    let snapshot = null;
+    let snapshotAt = 0;
+
+    function setText(id, value) {
+      document.getElementById(id).textContent = value;
+    }
+    function formatTime(seconds) {
+      seconds = Math.max(0, Math.floor(Number(seconds) || 0));
+      return String(Math.floor(seconds / 60)).padStart(2, '0') + ':' +
+        String(seconds % 60).padStart(2, '0');
+    }
+    function render() {
+      if (!snapshot) return;
+      const age = Math.max(0, (Date.now() - snapshotAt) / 1000);
+      const decrement = snapshot.state === 'RUNNING' ? Math.floor(age) : 0;
+      const whiteSeconds = Math.max(0, snapshot.white - (snapshot.whiteActive ? decrement : 0));
+      const blackSeconds = Math.max(0, snapshot.black - (!snapshot.whiteActive ? decrement : 0));
+
+      setText('whiteTime', formatTime(whiteSeconds));
+      setText('blackTime', formatTime(blackSeconds));
+      setText('whiteSet', formatTime(snapshot.whiteSetMinutes * 60 + snapshot.whiteSetSeconds));
+      setText('blackSet', formatTime(snapshot.blackSetMinutes * 60 + snapshot.blackSetSeconds));
+      setText('whiteMoves', snapshot.whiteMoves);
+      setText('blackMoves', snapshot.blackMoves);
+      setText('whiteInc', '+' + snapshot.whiteIncrement + 's');
+      setText('blackInc', '+' + snapshot.blackIncrement + 's');
+      setText('whiteTotal', snapshot.whiteTotalThinking + 's');
+      setText('blackTotal', snapshot.blackTotalThinking + 's');
+      setText('whiteAverage', snapshot.whiteAverageMove + 's');
+      setText('blackAverage', snapshot.blackAverageMove + 's');
+      setText('whiteLongest', snapshot.whiteLongestMove + 's');
+      setText('blackLongest', snapshot.blackLongestMove + 's');
+      setText('whiteShortest', snapshot.whiteShortestMove + 's');
+      setText('blackShortest', snapshot.blackShortestMove + 's');
+      setText('rtc', snapshot.rtcAvailable ? 'Connected' : 'Unavailable');
+
+      const increments = [snapshot.whiteIncrement, snapshot.blackIncrement];
+      const mode = increments.every(value => value === 0) ? 'Sudden death' :
+        (increments[0] === increments[1] ? 'Fischer +' + increments[0] + 's' : 'Custom increment');
+      setText('mode', mode);
+      setText('status', snapshot.state);
+      setText('result', snapshot.result);
+      setText('connectionText', age < 8 ? 'Live' : age < 15 ? 'Delayed' : 'Stale data');
+      connection.className = 'connection ' + (age < 8 ? 'online' : age < 15 ? '' : 'offline');
+
+      const white = document.getElementById('whiteBox');
+      const black = document.getElementById('blackBox');
+      white.classList.toggle('active', snapshot.state === 'RUNNING' && snapshot.whiteActive);
+      black.classList.toggle('active', snapshot.state === 'RUNNING' && !snapshot.whiteActive);
+      white.classList.toggle('low', whiteSeconds <= 30 && snapshot.state === 'RUNNING' && snapshot.whiteActive);
+      black.classList.toggle('low', blackSeconds <= 30 && snapshot.state === 'RUNNING' && !snapshot.whiteActive);
+      white.classList.toggle('flagged', snapshot.state === 'GAME OVER' && whiteSeconds === 0);
+      black.classList.toggle('flagged', snapshot.state === 'GAME OVER' && blackSeconds === 0);
+      document.getElementById('stateDot').style.background =
+        snapshot.state === 'RUNNING' ? 'var(--green)' :
+        snapshot.state === 'GAME OVER' ? 'var(--red)' : 'var(--gold)';
+    }
+    async function poll() {
+      if (!config.username || config.username === 'YOUR_ADAFRUIT_IO_USERNAME' || !config.feedKey) {
+        setText('connectionText', 'Configure feed');
+        connection.className = 'connection offline';
+        return;
+      }
+
+      const url = 'https://io.adafruit.com/api/v2/' +
+        encodeURIComponent(config.username) + '/feeds/' +
+        encodeURIComponent(config.feedKey) + '/data/last?include=value,created_at';
+      try {
+        const response = await fetch(url, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Adafruit IO returned HTTP ' + response.status);
+        const record = await response.json();
+        const parsed = JSON.parse(record.value);
+        const receivedAt = Date.parse(record.created_at);
+        if (!Number.isFinite(receivedAt) || !Number.isFinite(parsed.white) ||
+            !Number.isFinite(parsed.black) || !parsed.state) {
+          throw new Error('The feed does not contain a valid clock snapshot');
+        }
+        snapshot = parsed;
+        snapshotAt = receivedAt;
+        render();
+      } catch (error) {
+        setText('connectionText', snapshot ? 'Feed unavailable' : 'Waiting for telemetry');
+        connection.className = 'connection offline';
+        console.error('Could not load chess-clock telemetry:', error);
+      } finally {
+        window.setTimeout(poll, 3000);
+      }
+    }
+    window.setInterval(render, 250);
+    poll();
+  </script>
+</body>
+</html>
