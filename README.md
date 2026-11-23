@@ -7,6 +7,11 @@ per-player Fischer increments, physical button/encoder setup, pause/resume,
 LED indicators, optional DS3231 timestamps, and a live read-only web dashboard.
 The clock continues to run if Wi-Fi is not configured or unavailable.
 
+See `presentation/Implemented_Features.md` for the detailed current feature
+inventory and `presentation/Advanced_Chess_Clock_Project_Presentation.pptx`
+for the embedded-systems architecture slides and
+`presentation/Circuit_Diagram.png` for the pin-level connection diagram.
+
 ### Build and local dashboard
 
 Open `sketch_sep18b/sketch_sep18b.ino` in the Arduino IDE with an ESP32 board
@@ -48,6 +53,11 @@ publishing runs on a separate low-priority task, and the clock continues
 locally if Wi-Fi or Adafruit IO is unavailable. The ESP32 supports 2.4 GHz
 Wi-Fi only; a 5 GHz-only college network will not connect.
 
+The main Arduino loop is monitored by the ESP32 task watchdog. If the loop
+stalls for 5 seconds, the watchdog triggers a panic reset. The watchdog is
+temporarily removed from the loop task during intentional light sleep and
+re-enabled immediately after wake.
+
 ### Power management
 
 - The ESP32 runs at 80 MHz, uses Wi-Fi modem sleep, and dims the displays when
@@ -76,5 +86,5 @@ hardware. Verify the battery output is regulated 5 V and use the board's
 documented power input; never connect a bare cell directly to a 5 V or 3.3 V
 pin.
 
-MicroSD game logging, Bronstein delay, battery-voltage monitoring, watchdog
-handling, and automatic board sensing are not implemented in this prototype.
+MicroSD game logging, Bronstein delay, battery-voltage monitoring, and
+automatic board sensing are not implemented in this prototype.

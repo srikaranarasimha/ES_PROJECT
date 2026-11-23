@@ -10,6 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
+#include <esp_task_wdt.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
@@ -654,6 +655,12 @@ void setup() {
     Serial.println("Restored the saved idle game state.");
   }
   Serial.printf("CPU frequency: %u MHz\n", getCpuFrequencyMhz());
+  enableLoopWDT();
+  if (esp_task_wdt_status(nullptr) == ESP_OK) {
+    Serial.println("Task watchdog enabled for the main loop (5 second timeout).");
+  } else {
+    Serial.println("ERROR: task watchdog is not monitoring the main loop.");
+  }
   Serial.println("Chess clock ready.");
 }
 
@@ -1026,7 +1033,9 @@ void enterIdleSleep() {
     esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(remainingMs) * 1000ULL);
   }
 
+  disableLoopWDT();
   const esp_err_t sleepResult = esp_light_sleep_start();
+  enableLoopWDT();
   const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
   gpio_wakeup_disable(WAKE_BUTTON_GPIO);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
