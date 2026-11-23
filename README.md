@@ -43,9 +43,10 @@ can view its game status and history. Do not put the Adafruit IO key in
    `https://srikaranarasimha.github.io/ES_PROJECT/`.
 
 The ESP32 publishes the latest status about every 3 seconds (about 20 data
-points per minute). HTTPS publishing runs on a separate low-priority task, and
-the clock continues locally if Wi-Fi or Adafruit IO is unavailable. The ESP32
-supports 2.4 GHz Wi-Fi only; a 5 GHz-only college network will not connect.
+points per minute), and the website checks for updates once per second. HTTPS
+publishing runs on a separate low-priority task, and the clock continues
+locally if Wi-Fi or Adafruit IO is unavailable. The ESP32 supports 2.4 GHz
+Wi-Fi only; a 5 GHz-only college network will not connect.
 
 ### Power management
 

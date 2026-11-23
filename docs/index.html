@@ -122,6 +122,7 @@
   <script>
     const config = window.CHESS_CLOCK_CONFIG || {};
     const connection = document.getElementById('connection');
+    const FEED_POLL_INTERVAL_MS = 1000;
     let snapshot = null;
     let snapshotAt = 0;
 
@@ -207,7 +208,7 @@
         connection.className = 'connection offline';
         console.error('Could not load chess-clock telemetry:', error);
       } finally {
-        window.setTimeout(poll, 3000);
+        window.setTimeout(poll, FEED_POLL_INTERVAL_MS);
       }
     }
     window.setInterval(render, 250);
